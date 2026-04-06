@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M4 16 Q4 8 12 8 L24 8 Q28 8 30 12 L36 16 L60 16 Q60 16 60 20 L60 60 Q60 64 56 64 L8 64 Q4 64 4 60 Z"
+        fill="white" stroke="black" stroke-width="3" stroke-linejoin="round"/>
+  <text x="32" y="50" text-anchor="middle" font-family="monospace"
+        font-size="28" font-weight="bold" fill="black">ai</text>
+</svg>
