@@ -71,17 +71,16 @@ function extractAudioSpecificConfig(mp4: ISOFile, trackId: number): Uint8Array |
 }
 
 /**
- * Stream bytes from a file (starting at fileOffset) into mp4box in chunks.
- * Returns when the slice is exhausted or shouldStop returns true.
+ * Stream bytes from a file into mp4box in chunks.
+ * Returns when the file is exhausted or shouldStop returns true.
  */
 async function streamFileToMp4Box(
   file: Blob,
-  fileOffset: number,
   mp4: ISOFile,
   shouldStop: () => boolean,
 ): Promise<void> {
   const reader = file.stream().getReader();
-  let offset = fileOffset;
+  let offset = 0;
   // Buffer up to 1 MiB before flushing to mp4box, to limit appendBuffer overhead
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
@@ -160,7 +159,7 @@ export async function probeAudioPassthrough(file: File): Promise<AudioProbeResul
   };
 
   try {
-    await streamFileToMp4Box(file, 0, mp4, () => result !== null);
+    await streamFileToMp4Box(file, mp4, () => result !== null);
   } catch (e) {
     return { unsupported: `read error: ${e}`, hasAudio: false };
   }
@@ -262,7 +261,7 @@ export async function demuxAudio(
   // onReady. For fast-start MP4s this stops after a few MB; for moov-at-end
   // files it has to read the whole file (unavoidable without HTTP range).
   try {
-    await streamFileToMp4Box(file, 0, mp4, () => ready);
+    await streamFileToMp4Box(file, mp4, () => ready);
   } catch (e) {
     throw new Error(`mp4 demux read error: ${e}`);
   }

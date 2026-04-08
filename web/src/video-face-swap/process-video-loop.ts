@@ -72,10 +72,17 @@ export async function processVideoLoop(opts: ProcessVideoOptions): Promise<Blob>
     firstTimestampBehavior: "cross-track-offset",
   });
 
+  // The error callback fires on a later task, so throwing here would not
+  // reject the surrounding async function. Stash it and check at the
+  // synchronization points (await inFlight, flush) so the loop bails out.
+  let encoderError: Error | null = null;
+  const throwIfEncoderError = () => {
+    if (encoderError) throw encoderError;
+  };
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => {
-      throw new Error(`encoder error: ${e.message}`);
+      encoderError = new Error(`encoder error: ${e.message}`);
     },
   });
 
@@ -157,11 +164,14 @@ export async function processVideoLoop(opts: ProcessVideoOptions): Promise<Blob>
       break;
     }
     if (inFlight) await inFlight;
+    throwIfEncoderError();
     inFlight = processAndEncodeFrame(frame.image, frame.index, frame.total);
   }
   if (inFlight) await inFlight;
+  throwIfEncoderError();
 
   await encoder.flush();
+  throwIfEncoderError();
   encoder.close();
 
   // Write audio samples (passthrough, no re-encode), trimmed to [startTime, endTime]

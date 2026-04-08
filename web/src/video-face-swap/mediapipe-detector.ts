@@ -12,7 +12,9 @@ type WasmFileset = Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>;
 // Hosting note: the wasm runtime files come from a CDN at runtime. The .task
 // model file is OPFS-cached separately by the existing model manager. Tab
 // memory and the AI side stay zero-upload regardless.
-const MEDIAPIPE_WASM_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
+// Keep this version pinned in sync with @mediapipe/tasks-vision in package.json
+// so the JS package and the CDN-hosted wasm assets stay matched.
+const MEDIAPIPE_WASM_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm";
 
 // Indices into the 478-point MediaPipe face mesh used to derive the 5-point
 // alignment that arcface_128 / arcface_112_v2 / ffhq_512 templates expect.

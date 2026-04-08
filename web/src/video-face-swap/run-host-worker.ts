@@ -76,7 +76,12 @@ export class WorkerHost {
         reject,
         onEvent,
       });
-      this.worker.postMessage(req, transfer);
+      try {
+        this.worker.postMessage(req, transfer);
+      } catch (err) {
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -195,6 +200,9 @@ export class WorkerHost {
 
   dispose(): void {
     this.worker.terminate();
+    for (const [, p] of this.pending) {
+      p.reject(new Error("worker disposed"));
+    }
     this.pending.clear();
   }
 }

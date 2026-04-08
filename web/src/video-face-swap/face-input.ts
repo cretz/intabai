@@ -1,5 +1,6 @@
 export class FaceInput {
   private img: HTMLImageElement;
+  private currentObjectUrl: string | null = null;
 
   constructor(
     private fileInput: HTMLInputElement,
@@ -16,7 +17,9 @@ export class FaceInput {
   private onFileChange(): void {
     const file = this.fileInput.files?.[0];
     if (!file) return;
-    this.img.src = URL.createObjectURL(file);
+    if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
+    this.currentObjectUrl = URL.createObjectURL(file);
+    this.img.src = this.currentObjectUrl;
     this.img.style.display = "block";
   }
 

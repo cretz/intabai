@@ -24,6 +24,7 @@ export class VideoInput {
   private rangePreview = 0;
   private rangeEnd = 0;
   private file: File | null = null;
+  private currentObjectUrl: string | null = null;
   private audioStatus: string = "";
 
   constructor(
@@ -70,7 +71,9 @@ export class VideoInput {
     if (!file) return;
     this.file = file;
     this.audioStatus = "checking audio...";
-    this.video.src = URL.createObjectURL(file);
+    if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
+    this.currentObjectUrl = URL.createObjectURL(file);
+    this.video.src = this.currentObjectUrl;
     this.video.style.display = "block";
     this.statusEl.style.display = "none";
 

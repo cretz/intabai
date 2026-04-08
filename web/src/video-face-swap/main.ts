@@ -75,6 +75,8 @@ const profilePreviewCheck = document.getElementById("profile-preview-check") as 
 const gpuPasteCheck = document.getElementById("gpu-paste-check") as HTMLInputElement;
 const workerModeSelect = document.getElementById("worker-mode-select") as HTMLSelectElement;
 
+let lastOutputUrl: string | null = null;
+
 function setStatus(text: string): void {
   statusLine.textContent = text;
 }
@@ -576,7 +578,9 @@ swapBtn.addEventListener("click", async () => {
     }
 
     setStatus("finalizing...");
+    if (lastOutputUrl) URL.revokeObjectURL(lastOutputUrl);
     const url = URL.createObjectURL(videoBlob);
+    lastOutputUrl = url;
     const sizeMB = (videoBlob.size / 1024 / 1024).toFixed(1);
     const elapsedSec = (performance.now() - swapStartTime) / 1000;
     setStatus(`done - ${sizeMB} MB - took ${formatEta(elapsedSec)}`);
