@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>video face swap - intabai</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      .field {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .field label {
+        min-width: 80px;
+      }
+      .field input[type="checkbox"] + label {
+        min-width: 0;
+      }
+      #range-slider {
+        position: relative;
+      }
+      .range-preview-marker {
+        position: absolute;
+        top: -22px;
+        bottom: -8px;
+        pointer-events: none;
+        transform: translateX(-50%);
+      }
+      .range-preview-line {
+        width: 2px;
+        height: 100%;
+        background: currentColor;
+        margin: 0 auto;
+      }
+      .range-preview-tag {
+        position: absolute;
+        top: -2px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .field input[type="text"] {
+        flex: 1;
+        min-width: 200px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <p><a href="/">intabai</a> / video face swap</p>
+      <a href="https://github.com/cretz/intabai/tree/main/web/tools/video-face-swap">github</a>
+    </div>
+    <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
+    </div>
+    <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
+    </div>
+    <hr />
+
+    <fieldset>
+      <legend>models (cached in browser)</legend>
+      <details>
+        <summary>show / hide model cache</summary>
+        <small>
+          Models download once into your browser and persist across visits.
+          Nothing leaves your machine.
+        </small>
+        <div id="model-manager"></div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>video</legend>
+      <input type="file" id="video-input" accept="video/*" />
+      <div id="video-preview"></div>
+      <div id="video-downscale" style="display: none">
+        <div class="field">
+          <label for="downscale-select">process at</label>
+          <select id="downscale-select">
+            <!-- populated dynamically based on video resolution -->
+          </select>
+        </div>
+      </div>
+      <details id="video-range" style="display: none; margin-top: 8px">
+        <summary>video subset (full video)</summary>
+        <div id="range-slider" style="margin: 30px 8px 16px"></div>
+        <div class="field">
+          <label for="range-start-input">start</label>
+          <input type="text" id="range-start-input" style="flex: 0 0 80px; min-width: 0" />
+          <label
+            for="range-preview-input"
+            id="range-preview-label"
+            style="display: none; min-width: 0"
+          >preview</label>
+          <input
+            type="text"
+            id="range-preview-input"
+            style="display: none; flex: 0 0 80px; min-width: 0"
+          />
+          <label for="range-end-input" style="min-width: 0">end</label>
+          <input type="text" id="range-end-input" style="flex: 0 0 80px; min-width: 0" />
+        </div>
+        <div class="field">
+          <input type="checkbox" id="range-preview-check" />
+          <label for="range-preview-check">use separate preview frame</label>
+        </div>
+        <div class="field">
+          <input type="checkbox" id="range-limit-check" />
+          <label for="range-limit-check">scope preview player above to selected range</label>
+        </div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>face image</legend>
+      <input type="file" id="face-input" accept="image/*" />
+      <div id="face-preview"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>options</legend>
+      <div class="field">
+        <label for="model-select">swap model</label>
+        <select id="model-select" disabled>
+          <option value="">download a model first</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="detector-select">face detector</label>
+        <select id="detector-select">
+          <option value="scrfd_500m" selected>SCRFD 500m (default, fast + good quality)</option>
+          <option value="yoloface">YOLOFace + 2DFAN4 (slowest, highest quality landmarks)</option>
+          <option value="mediapipe">MediaPipe FaceLandmarker (fast, desktop only - silently fails on mobile)</option>
+          <option value="yunet">YuNet (fast, lower quality than SCRFD)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="enhancer-select">face enhancement</label>
+        <select id="enhancer-select">
+          <option value="">(none) - faster</option>
+        </select>
+      </div>
+      <div class="field">
+        <input type="checkbox" id="xseg-check" checked />
+        <span style="flex: 1">
+          <label for="xseg-check">XSeg occlusion mask</label>
+          <small>
+            - better blending around hair/hands. small per-frame cost.
+          </small>
+        </span>
+      </div>
+      <div class="field">
+        <input type="checkbox" id="preview-check" checked />
+        <label for="preview-check">
+          preview single frame before processing full video
+        </label>
+      </div>
+      <details id="advanced-section" style="margin-top: 8px">
+        <summary>advanced</summary>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="profile-preview-check" />
+          <span style="flex: 1">
+            <label for="profile-preview-check">profile preview image</label>
+            <small>
+              - dump per-kernel WebGPU timings to the browser console for the
+              single preview frame swap. requires "preview single frame" to be
+              on. no effect on full-video processing.
+            </small>
+          </span>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="gpu-paste-check" />
+          <span style="flex: 1">
+            <label for="gpu-paste-check">GPU paste-back</label>
+            <small>
+              - run paste-back on a WebGPU compute shader instead of the JS
+              double-loop. modest win on mobile, neutral or slightly worse
+              on desktop (GPU dispatch overhead vs the JS loop on typical
+              frame sizes).
+            </small>
+          </span>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <span style="flex: 1">
+            <label for="worker-mode-select">worker mode</label>
+            <small>
+              - off: pipeline runs on the main thread.
+              per-frame: worker holds the pipeline; main thread still extracts
+              and muxes, sends each frame to the worker for processing.
+              full: worker also extracts (mp4box + WebCodecs) and muxes -
+              main thread is essentially idle during processing.
+            </small>
+            <select id="worker-mode-select">
+              <option value="off">off</option>
+              <option value="perFrame">per-frame in worker</option>
+              <option value="full">full worker</option>
+            </select>
+          </span>
+        </div>
+      </details>
+      <div class="field">
+        <button type="button" id="reset-options-btn">reset to defaults</button>
+        <small id="mobile-defaults-notice" style="display: none">
+          mobile-friendly defaults applied
+        </small>
+      </div>
+    </fieldset>
+
+    <button id="swap-btn" disabled>swap</button>
+
+    <fieldset id="processing" style="display: none">
+      <legend>processing</legend>
+      <progress id="progress" value="0" max="100" style="width: 100%"></progress>
+      <div style="margin-top: 6px"><strong id="status-line"></strong></div>
+      <div id="frame-line" style="margin-top: 4px"></div>
+      <div id="timing-line" style="margin-top: 4px"></div>
+      <div id="error-line" style="margin-top: 6px"></div>
+      <button type="button" id="cancel-btn" style="display: none; margin-top: 8px">cancel</button>
+    </fieldset>
+
+    <div id="output"></div>
+
+    <script type="module" src="/src/video-face-swap/main.ts"></script>
+  </body>
+</html>
