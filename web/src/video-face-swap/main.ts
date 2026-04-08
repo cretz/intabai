@@ -3,17 +3,53 @@ import { VideoInput } from "./video-input";
 import { FaceInput } from "./face-input";
 import { ModelManager } from "./model-manager";
 import { type FrameTimings } from "./pipeline";
-import { createSession } from "./session";
+import { createSession, type WorkerMode } from "./session";
 import { MODEL_SETS, type DetectorId } from "./models";
 import {
-  type PersistedSettings,
-  type WorkerMode,
-  clearSettings,
-  getMobileDefaults,
+  PersistedSettings as PersistedSettingsStore,
   isMobile,
-  loadSettings,
-  saveSettings,
-} from "./settings";
+} from "../shared/persisted-settings";
+
+// Persisted UI settings: everything that isn't per-video or per-face (so no
+// file inputs, no time ranges) so that the next visit can pick up where the
+// last one left off. Mobile-friendly defaults are applied on first visit so
+// the tool is usable out of the box on phones.
+interface PersistedSettings {
+  swapModel: string;
+  detector: string;
+  enhancer: string;
+  useXseg: boolean;
+  doPreview: boolean;
+  downscale: string;
+  rangeLimit: boolean;
+  separatePreview: boolean;
+  rangePanelOpen: boolean;
+  advancedPanelOpen: boolean;
+  profilePreview: boolean;
+  gpuPaste: boolean;
+  workerMode: WorkerMode;
+}
+
+const settingsStore = new PersistedSettingsStore<PersistedSettings>(
+  "intabai-video-face-swap-settings",
+);
+
+/** Mobile-tuned defaults: skip slow CPU work, use the fast detector. */
+function getMobileDefaults(): Partial<PersistedSettings> {
+  return {
+    detector: "scrfd_500m",
+    enhancer: "",
+    useXseg: false,
+    doPreview: true,
+    downscale: "720", // 720p target if available
+    rangeLimit: false,
+    separatePreview: false,
+    rangePanelOpen: false,
+    advancedPanelOpen: false,
+    profilePreview: false,
+    gpuPaste: true,
+  };
+}
 
 // Check browser compatibility
 {
@@ -260,7 +296,7 @@ function captureCurrentSettings(): PersistedSettings {
 }
 
 function persistCurrentSettings(): void {
-  saveSettings(captureCurrentSettings());
+  settingsStore.save(captureCurrentSettings());
 }
 
 /**
@@ -314,7 +350,7 @@ function applySettings(s: Partial<PersistedSettings>): void {
  * defaults (and show the notice) if we're on a touch device.
  */
 function applyInitialSettings(): void {
-  const saved = loadSettings();
+  const saved = settingsStore.load();
   if (saved) {
     applySettings(saved);
     mobileNotice.style.display = "none";
@@ -344,7 +380,7 @@ function wireSettingsPersistence(): void {
   workerModeSelect.addEventListener("change", onChange);
 
   resetBtn.addEventListener("click", () => {
-    clearSettings();
+    settingsStore.clear();
     pendingDownscaleHeight = null;
     if (isMobile()) {
       applySettings(getMobileDefaults());

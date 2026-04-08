@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>image gen - intabai</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="topbar">
+      <p><a href="/">intabai</a> / image gen</p>
+      <a href="https://github.com/cretz/intabai/tree/main/web/tools/image-gen">github</a>
+    </div>
+    <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>
+    <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>
+    <hr />
+
+    <fieldset>
+      <legend>models (cached in browser)</legend>
+      <details>
+        <summary>show / hide model cache</summary>
+        <small>
+          Models download once into your browser and persist across visits.
+          Nothing leaves your machine.
+        </small>
+        <div id="model-manager"></div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>prompt</legend>
+      <textarea
+        id="prompt"
+        style="width: 100%; min-height: 80px; box-sizing: border-box; font-family: inherit"
+        placeholder="a photo of an astronaut riding a horse"
+      ></textarea>
+    </fieldset>
+
+    <fieldset>
+      <legend>options</legend>
+      <div>
+        <label for="model-select">model</label>
+        <select id="model-select"></select>
+      </div>
+      <details id="ref-image-section" style="margin-top: 8px">
+        <summary>input image (optional)</summary>
+        <div id="ref-image-help" style="margin-top: 6px">
+          <small>Provide an image to guide generation. How it is used depends on the selected model.</small>
+        </div>
+        <div id="ref-image-modelhelp" style="margin-top: 6px">
+          <small></small>
+        </div>
+        <div style="margin-top: 6px">
+          <input type="file" id="ref-image-input" accept="image/*" />
+          <button type="button" id="ref-image-clear" style="margin-left: 6px; display: none">clear</button>
+        </div>
+        <div id="ref-image-preview-wrap" style="margin-top: 6px; display: none">
+          <img id="ref-image-preview" alt="reference preview" style="max-width: 256px; max-height: 256px; border: 1px solid" />
+        </div>
+        <div id="ref-image-strength-wrap" class="field" style="margin-top: 6px; display: none">
+          <label for="ref-strength-input" id="ref-strength-label">strength</label>
+          <input type="range" id="ref-strength-input" min="0" max="1" step="0.05" style="width: 12em" />
+          <span id="ref-strength-value"></span>
+          <small>
+            - 0 keeps the reference unchanged, 1 ignores it. ~0.5 is a
+            good starting point for "same scene, different style".
+          </small>
+        </div>
+      </details>
+      <details id="advanced-section" style="margin-top: 8px">
+        <summary>advanced</summary>
+        <div class="field" style="margin-top: 6px">
+          <label for="width-input">width</label>
+          <input type="number" id="width-input" min="64" max="1024" step="8" style="width: 6em" />
+          <label for="height-input" style="margin-left: 8px">height</label>
+          <input type="number" id="height-input" min="64" max="1024" step="8" style="width: 6em" />
+          <small id="resolution-help">- multiples of 8.</small>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <label for="steps-input">steps</label>
+          <input type="number" id="steps-input" min="1" max="200" step="1" style="width: 5em" />
+          <small id="steps-help">- denoising iterations. fewer = faster, lower quality.</small>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <label for="cfg-input">CFG scale</label>
+          <input type="number" id="cfg-input" min="0" max="30" step="0.5" style="width: 5em" />
+          <small id="cfg-help">- prompt adherence strength.</small>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <label for="seed-input">seed</label>
+          <input type="number" id="seed-input" min="0" step="1" style="width: 10em" placeholder="random" />
+          <small>- leave blank for a fresh random seed each run.</small>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="tile-vae-check" />
+          <span style="flex: 1">
+            <label for="tile-vae-check">tile VAE decode</label>
+            <small>
+              - decode the VAE in 256-pixel tiles instead of one shot.
+              works around GPU memory crashes seen on some mobile WebGPU
+              stacks at 384+. introduces faint blending in tile-overlap
+              regions; default on for mobile, off for desktop.
+            </small>
+          </span>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="debug-log-check" />
+          <span style="flex: 1">
+            <label for="debug-log-check">debug console log</label>
+            <small>
+              - log verbose per-step diagnostics (timings, latent stats,
+              NaN counts) to the browser devtools console. useful when
+              something is wrong; noisy otherwise.
+            </small>
+          </span>
+        </div>
+      </details>
+      <div style="margin-top: 8px">
+        <button type="button" id="reset-options-btn">reset to defaults</button>
+      </div>
+    </fieldset>
+
+    <button id="generate-btn" disabled>generate</button>
+
+    <fieldset id="processing" style="display: none">
+      <legend>processing</legend>
+      <progress id="progress" value="0" max="100" style="width: 100%"></progress>
+      <div style="margin-top: 6px"><strong id="status-line"></strong></div>
+      <div id="stats-line" style="margin-top: 4px"></div>
+      <button type="button" id="cancel-btn" style="display: none; margin-top: 8px">cancel</button>
+    </fieldset>
+
+    <fieldset id="result-section" style="display: none">
+      <legend>result</legend>
+      <canvas id="result-canvas" style="max-width: 100%; height: auto; image-rendering: auto"></canvas>
+      <div id="result-downloads" style="margin-top: 8px"></div>
+    </fieldset>
+
+    <script type="module" src="/src/image-gen/main.ts"></script>
+  </body>
+</html>

@@ -13,7 +13,7 @@ import { WorkerHost } from "./run-host-worker";
 import { grabFrame, processVideo as inprocProcessVideo } from "./run-host-inproc";
 import { HtmlVideoFrameProvider } from "./html-video-frame-provider";
 import { processVideoLoop } from "./process-video-loop";
-import type { WorkerMode } from "./settings";
+export type WorkerMode = "off" | "perFrame" | "full";
 
 export interface Session {
   loadModels(set: ModelSet, enhancerId: string | null, detectorId: DetectorId): Promise<void>;

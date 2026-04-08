@@ -1,16 +1,12 @@
 import xsegPatch from "./patches/xseg_1.patch.json";
-import type { Patch } from "./model-patch";
+import { patchTransform, type Patch } from "../shared/model-patch";
+import type { ModelFile } from "../shared/model-cache";
+
+// Re-export so the rest of face-swap can keep importing ModelFile from here.
+export type { ModelFile } from "../shared/model-cache";
 
 const HF = "https://huggingface.co";
 
-export interface ModelFile {
-  id: string;
-  name: string;
-  url: string;
-  sizeBytes: number;
-  /** Optional binary patch applied to the downloaded bytes before caching. */
-  patch?: Patch;
-}
 
 export interface ModelSet {
   id: string;
@@ -47,7 +43,7 @@ const XSEG: ModelFile = {
   name: "XSeg (face segmentation)",
   url: `${HF}/facefusion/models-3.1.0/resolve/main/xseg_1.onnx`,
   sizeBytes: 70_000_000,
-  patch: xsegPatch as Patch,
+  transform: patchTransform(xsegPatch as Patch),
 };
 
 // Alternate detector bundled with every swap set. MediaPipe FaceLandmarker is

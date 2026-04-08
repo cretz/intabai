@@ -1,4 +1,4 @@
-import { ModelCache, type DownloadProgress } from "./model-cache";
+import { ModelCache, type DownloadProgress } from "../shared/model-cache";
 import {
   ENHANCERS,
   MODEL_SETS,
@@ -19,7 +19,10 @@ export class ModelManager {
     private container: HTMLDivElement,
     private enhancerSelect: HTMLSelectElement,
   ) {
-    this.cache = new ModelCache();
+    this.cache = new ModelCache({
+      opfsDirName: "intabai-video-face-swap",
+      legacyDirNames: ["intabai-models"],
+    });
   }
 
   async init(): Promise<void> {
@@ -69,7 +72,7 @@ export class ModelManager {
   // --- Swap model sets ---
 
   private async renderSet(set: ModelSet): Promise<void> {
-    const cached = await this.cache.isSetCached(set);
+    const cached = await this.cache.areAllCached(allFiles(set));
     if (cached) this.readySets.add(set.id);
 
     const div = document.createElement("div");
@@ -103,7 +106,7 @@ export class ModelManager {
     btn.disabled = true;
 
     try {
-      await this.cache.downloadSet(set, (p: DownloadProgress) => {
+      await this.cache.downloadFiles(allFiles(set), (p: DownloadProgress) => {
         const pct = ((p.bytesLoaded / p.bytesTotal) * 100).toFixed(0);
         progressText.textContent = ` ${p.fileName}: ${pct}% (${p.fileIndex + 1}/${p.fileCount})`;
       });
@@ -117,7 +120,7 @@ export class ModelManager {
   }
 
   private async onDeleteSet(set: ModelSet, div: HTMLElement): Promise<void> {
-    await this.cache.deleteSet(set);
+    await this.cache.deleteFiles(allFiles(set));
     this.readySets.delete(set.id);
     this.fillSetDiv(div, set, false);
   }

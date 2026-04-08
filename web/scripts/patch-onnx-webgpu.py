@@ -44,7 +44,6 @@ Usage:
     python patch-onnx-webgpu.py patch-incompatible-ops xseg_1.onnx xseg_1.patched.onnx
     python patch-onnx-webgpu.py diff-onnx xseg_1.onnx xseg_1.patched.onnx xseg_1.patch.json
 """
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -52,6 +51,8 @@ from pathlib import Path
 import numpy
 import onnx
 from onnx import helper, numpy_helper
+
+from lib.onnx_patch_common import sha256, verify_patch
 
 
 UNSUPPORTED_OPS = {"Max", "PRelu", "GlobalAveragePool"}
@@ -291,12 +292,6 @@ def cmd_patch(in_path: Path, out_path: Path) -> None:
     print(f"  wrote {out_path} ({out_path.stat().st_size} bytes)")
 
 
-def _sha256(data: bytes) -> str:
-    h = hashlib.sha256()
-    h.update(data)
-    return h.hexdigest()
-
-
 def _diff_bytes(a: bytes, b: bytes, window: int = 32):
     """Forward-applicable binary diff producing {offset, delete, insert} edits.
 
@@ -413,26 +408,11 @@ def cmd_diff(src_path: Path, dst_path: Path, out_path: Path) -> None:
     dst = dst_path.read_bytes()
 
     print(f"hashing...")
-    src_sha = _sha256(src)
-    dst_sha = _sha256(dst)
+    src_sha = sha256(src)
+    dst_sha = sha256(dst)
 
     print(f"diffing ({len(src)} -> {len(dst)} bytes)...")
     edits = _diff_bytes(src, dst)
-
-    # Sanity check: forward-apply with running delta and confirm result.
-    print(f"verifying patch...")
-    out = bytearray()
-    cursor = 0
-    for e in edits:
-        if e["offset"] < cursor:
-            raise RuntimeError(f"edits not sorted: offset {e['offset']} < cursor {cursor}")
-        out.extend(src[cursor : e["offset"]])
-        out.extend(bytes.fromhex(e["insert"]))
-        cursor = e["offset"] + e["delete"]
-    out.extend(src[cursor:])
-    if bytes(out) != dst:
-        raise RuntimeError("patch verification failed: applied output != dst")
-    print(f"  ok ({len(edits)} edit(s))")
 
     patch = {
         "srcSha256": src_sha,
@@ -441,6 +421,9 @@ def cmd_diff(src_path: Path, dst_path: Path, out_path: Path) -> None:
         "dstLen": len(dst),
         "edits": edits,
     }
+
+    print(f"verifying patch...")
+    verify_patch(src, patch)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(patch, indent=2))

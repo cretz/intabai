@@ -19,7 +19,7 @@ import {
   SCRFD_500M,
   allFiles,
 } from "./models";
-import { ModelCache } from "./model-cache";
+import { ModelCache } from "../shared/model-cache";
 import { MediaPipeDetector } from "./mediapipe-detector";
 
 // Warp templates from FaceFusion (normalized coordinates for 5-point alignment)
@@ -118,7 +118,10 @@ export class Pipeline {
   }
 
   constructor(private readonly useGpuPaste: boolean = false) {
-    this.cache = new ModelCache();
+    this.cache = new ModelCache({
+      opfsDirName: "intabai-video-face-swap",
+      legacyDirNames: ["intabai-models"],
+    });
   }
 
   private async pasteBackImpl(

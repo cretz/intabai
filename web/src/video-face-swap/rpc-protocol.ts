@@ -6,7 +6,7 @@
 // transfer list, so frame data is moved zero-copy across the worker
 // boundary instead of being structure-cloned.
 
-import type { DetectorId, ModelSet } from "./models";
+import type { DetectorId } from "./models";
 import type { FrameStats } from "./pipeline";
 
 // Float32Array.buffer is typed ArrayBufferLike (which includes
@@ -48,7 +48,11 @@ export interface RpcInit {
 
 export interface RpcLoadModels {
   type: "loadModels";
-  set: ModelSet;
+  // Pass the set id rather than the whole ModelSet: the set's ModelFile
+  // entries can carry a `transform` containing functions (e.g. xseg's patch
+  // applier), which structured-clone refuses across postMessage. The worker
+  // resolves the id against its own MODEL_SETS import.
+  setId: string;
   enhancerId: string | null;
   detectorId: DetectorId;
 }

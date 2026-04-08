@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>model smoke - intabai</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="topbar">
+      <p><a href="/">intabai</a> / model smoke (temp)</p>
+    </div>
+    <hr />
+
+    <p>
+      <small>
+        Temporary tool. Downloads a candidate ONNX model bundle, attempts
+        <code>InferenceSession.create</code> on each component, and (for the
+        UNet) attempts one dummy <code>session.run</code> with zero tensors.
+        Results dump into the log below for copy/paste. Cache lives in OPFS
+        under <code>intabai-model-smoke</code> and is independent from the
+        image-gen cache.
+      </small>
+    </p>
+
+    <fieldset>
+      <legend>model</legend>
+      <div>
+        <label for="model-select">candidate</label>
+        <select id="model-select"></select>
+      </div>
+      <div style="margin-top: 6px">
+        <label for="component-select">component</label>
+        <select id="component-select"></select>
+      </div>
+      <div style="margin-top: 6px">
+        <button type="button" id="run-btn">download + smoke test</button>
+        <button type="button" id="clear-btn">clear smoke cache</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>progress</legend>
+      <progress id="progress" value="0" max="100" style="width: 100%"></progress>
+      <div style="margin-top: 6px"><strong id="status-line">idle</strong></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>log (copy/paste this back)</legend>
+      <textarea
+        id="log"
+        readonly
+        style="
+          width: 100%;
+          min-height: 400px;
+          box-sizing: border-box;
+          font-family: monospace;
+          font-size: 12px;
+          white-space: pre;
+        "
+      ></textarea>
+    </fieldset>
+
+    <script type="module" src="/src/model-smoke/main.ts"></script>
+  </body>
+</html>
