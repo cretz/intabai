@@ -267,9 +267,13 @@ async function runShardedTransformerLoop(
   const nShards = shards.length;
   log(`[zimage-sharded] ${nShards} shards, ${numSteps} steps`);
 
-  // Create scheduler first so ORT initializes the WebGPU device
-  const schedSess = await createZImageSession(cache, set.schedulerStep, defaultProviders());
-  log("[zimage-sharded] scheduler step model loaded");
+  // Keep the scheduler on WASM so the shard sessions are the only live
+  // WebGPU sessions during the DiT loop. ORT-web's WebGPU allocator/cache
+  // appears to defer freeing buffers until all sessions are gone; keeping a
+  // persistent scheduler WebGPU session alive may prevent shard memory from
+  // actually being reclaimed on mobile between shard releases.
+  const schedSess = await createZImageSession(cache, set.schedulerStep, ["wasm"]);
+  log("[zimage-sharded] scheduler step model loaded (wasm)");
 
   const gpuDevice = getGpuDevice();
   if (!gpuDevice) throw new Error("Sharded Z-Image requires WebGPU");
@@ -278,20 +282,16 @@ async function runShardedTransformerLoop(
   const hiddenDims = [1, LATENT_CHANNELS, 1, latentH, latentW] as const;
   const noiseDims = [LATENT_CHANNELS, 1, latentH, latentW] as const;
 
-  // Scheduler GPU tensors (persist across all steps, same as monolithic)
+  // Shards still use GPU IO for their final noise prediction upload path.
   const gpuNoisePred = createGpuBuf(gpuDevice, "float32", noiseDims);
-  const gpuStepInfo = createGpuBuf(gpuDevice, "float32", [2]);
-  const gpuLatentsA = createGpuBuf(gpuDevice, "float32", hiddenDims);
-  const gpuLatentsB = createGpuBuf(gpuDevice, "float32", hiddenDims);
 
-  // Write initial latent into buffer A
-  writeGpu(gpuDevice, gpuLatentsA, initialLatent);
+  // Parallel CPU copy of the current latent, used as `hidden_states` input to
+  // shard 0 of the next step. After each step, the WASM scheduler produces
+  // the next latent directly on CPU.
+  let cachedHiddenData: Float32Array = initialLatent;
 
   // Graph-level inputs as CPU tensors (re-used every step)
   const cpuEncHidden = new ort.Tensor("float32", encoderHiddenState, [1, sequenceLength, set.hiddenDim]);
-
-  let schedLatentsIn = gpuLatentsA;
-  let schedLatentsOut = gpuLatentsB;
 
   cb.advance();
   cb.checkAborted();
@@ -305,12 +305,12 @@ async function runShardedTransformerLoop(
     const tStep = performance.now();
 
     const cpuTimestep = new ort.Tensor("float32", Float32Array.from([schedule.timesteps[step]]), [1]);
-    // hidden_states for shard 0 comes from the scheduler output (or initial latent)
-    const cpuHidden = new ort.Tensor(
-      "float32",
-      await readGpu(gpuDevice, schedLatentsIn, latentLen),
-      hiddenDims,
-    );
+    // hidden_states for shard 0 comes from the cached scheduler output (or
+    // initial latent for step 0). Reading from GPU happens at the END of the
+    // previous step while the device is still healthy - by the time we get
+    // here, the N shard release cycles may have put the device in a state
+    // where readGpu fails with "buffer associated with ... cannot be used".
+    const cpuHidden = new ort.Tensor("float32", cachedHiddenData, hiddenDims);
 
     // Accumulate inter-shard tensors. Shard 0 gets the 3 graph inputs;
     // subsequent shards get the union of all prior shard outputs.
@@ -370,21 +370,23 @@ async function runShardedTransformerLoop(
     const noisePredTensor = tensorPool["unified_results"];
     if (!noisePredTensor) throw new Error("final shard did not produce unified_results");
 
-    // Copy noise pred into the scheduler's GPU buffer
+    // Preserve the existing GPU upload here as a lightweight validation that
+    // the final shard output is still representable in the same boundary form
+    // the monolithic path uses, but run the scheduler itself on CPU/WASM.
     const noisePredData = noisePredTensor.data as Float32Array;
     writeGpu(gpuDevice, gpuNoisePred, noisePredData);
 
-    // Scheduler Euler step (GPU IO binding, same as monolithic)
-    writeGpu(gpuDevice, gpuStepInfo, Float32Array.from([step, numSteps]));
-    await schedSess.run(
-      { noise_pred: gpuNoisePred, latents: schedLatentsIn, step_info: gpuStepInfo },
-      { latents_out: schedLatentsOut },
-    );
-
-    // Ping-pong
-    const tmp = schedLatentsIn;
-    schedLatentsIn = schedLatentsOut;
-    schedLatentsOut = tmp;
+    // Scheduler Euler step on CPU/WASM. This avoids keeping a persistent
+    // WebGPU session alive across the shard create/release churn.
+    const schedResults = await schedSess.run({
+      noise_pred: new ort.Tensor("float32", noisePredData, noiseDims),
+      latents: new ort.Tensor("float32", cachedHiddenData, hiddenDims),
+      step_info: new ort.Tensor("float32", Float32Array.from([step, numSteps]), [2]),
+    });
+    const nextLatents = schedResults["latents_out"];
+    if (!nextLatents) throw new Error('scheduler did not produce "latents_out"');
+    cachedHiddenData = new Float32Array(nextLatents.data as Float32Array);
+    nextLatents.dispose();
 
     const stepMs = performance.now() - tStep;
     stepTimeSum += stepMs;
@@ -401,7 +403,7 @@ async function runShardedTransformerLoop(
   }
   log(`[zimage-sharded] DiT loop total: ${((performance.now() - tLoop) / 1000).toFixed(1)} s`);
 
-  const latent = await readGpu(gpuDevice, schedLatentsIn, latentLen);
+  const latent = cachedHiddenData;
   await schedSess.release();
   log("[zimage-sharded] scheduler released");
   return latent;
