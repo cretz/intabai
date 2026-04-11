@@ -802,11 +802,11 @@ export const ZIMAGE_TURBO_REORDERED_MODEL: ZImageModelSet = {
 };
 
 // =============================================================================
-// Z-Image-Turbo Sharded (10x ~170 MB transformer shards for mobile + double
-// buffering). Same reordered graph, topologically partitioned at --max-shard-
-// size 400MB. Shards share a single external data file (the same one the
-// monolithic path uses, in the sibling /onnx/ dir). Served from local dev
-// server. The prior 5-shard set at /onnx/ is kept on disk as a fallback.
+// Z-Image-Turbo Sharded (boundary-aware 6-shard experiment). Same reordered
+// graph, but now partitioned with the boundary-aware sharder heuristic:
+// stable topo order, block-end candidate cuts, and live-tensor scoring.
+// Served from the local dev server. Older /onnx, /onnx-400, and /onnx-600
+// artifacts remain on disk for fallback/comparison.
 // =============================================================================
 
 // Per-shard graph files. Each shard references only the external initializers
@@ -815,42 +815,34 @@ export const ZIMAGE_TURBO_REORDERED_MODEL: ZImageModelSet = {
 // external_data strings changed the graph bytes from the earlier shared-data
 // version.
 const ZIMAGE_SHARD_GRAPHS: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_400_v2_s0", name: "Z-Image transformer shard 0", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard0.onnx`, sizeBytes: 332_495_721 },
-  { id: "zimage_sharded_xfmr_400_v2_s1", name: "Z-Image transformer shard 1", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard1.onnx`, sizeBytes: 169_723_986 },
-  { id: "zimage_sharded_xfmr_400_v2_s2", name: "Z-Image transformer shard 2", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard2.onnx`, sizeBytes: 164_811_652 },
-  { id: "zimage_sharded_xfmr_400_v2_s3", name: "Z-Image transformer shard 3", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard3.onnx`, sizeBytes: 164_811_704 },
-  { id: "zimage_sharded_xfmr_400_v2_s4", name: "Z-Image transformer shard 4", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard4.onnx`, sizeBytes: 169_713_225 },
-  { id: "zimage_sharded_xfmr_400_v2_s5", name: "Z-Image transformer shard 5", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard5.onnx`, sizeBytes: 172_163_995 },
-  { id: "zimage_sharded_xfmr_400_v2_s6", name: "Z-Image transformer shard 6", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard6.onnx`, sizeBytes: 167_262_763 },
-  { id: "zimage_sharded_xfmr_400_v2_s7", name: "Z-Image transformer shard 7", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard7.onnx`, sizeBytes: 162_361_757 },
-  { id: "zimage_sharded_xfmr_400_v2_s8", name: "Z-Image transformer shard 8", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard8.onnx`, sizeBytes: 164_812_260 },
-  { id: "zimage_sharded_xfmr_400_v2_s9", name: "Z-Image transformer shard 9", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard9.onnx`, sizeBytes: 7_539_177 },
+  { id: "zimage_sharded_xfmr_600b_s0", name: "Z-Image transformer shard 0", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard0.onnx`, sizeBytes: 83_489_820 },
+  { id: "zimage_sharded_xfmr_600b_s1", name: "Z-Image transformer shard 1", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard1.onnx`, sizeBytes: 550_323_668 },
+  { id: "zimage_sharded_xfmr_600b_s2", name: "Z-Image transformer shard 2", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard2.onnx`, sizeBytes: 377_565_157 },
+  { id: "zimage_sharded_xfmr_600b_s3", name: "Z-Image transformer shard 3", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard3.onnx`, sizeBytes: 377_566_074 },
+  { id: "zimage_sharded_xfmr_600b_s4", name: "Z-Image transformer shard 4", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard4.onnx`, sizeBytes: 286_583_178 },
+  { id: "zimage_sharded_xfmr_600b_s5", name: "Z-Image transformer shard 5", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard5.onnx`, sizeBytes: 156_321 },
 ];
 
 // Per-shard external data files. Each holds only the initializer bytes that
 // the matching shard graph consumes (~56-225 MB each). This replaces the
 // old shared 2 GB ZIMAGE_REORDERED_XFMR_DATA reference for sharded sessions.
 const ZIMAGE_SHARD_DATA_FILES: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_400_v2_d0", name: "Z-Image transformer shard 0 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard0.onnx_data`, sizeBytes: 78_643_200 },
-  { id: "zimage_sharded_xfmr_400_v2_d1", name: "Z-Image transformer shard 1 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard1.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d2", name: "Z-Image transformer shard 2 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard2.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d3", name: "Z-Image transformer shard 3 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard3.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d4", name: "Z-Image transformer shard 4 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard4.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d5", name: "Z-Image transformer shard 5 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard5.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d6", name: "Z-Image transformer shard 6 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard6.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d7", name: "Z-Image transformer shard 7 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard7.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d8", name: "Z-Image transformer shard 8 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard8.onnx_data`, sizeBytes: 235_929_600 },
-  { id: "zimage_sharded_xfmr_400_v2_d9", name: "Z-Image transformer shard 9 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-400/transformer_model_q4f16_shard9.onnx_data`, sizeBytes: 58_982_400 },
+  { id: "zimage_sharded_xfmr_600b_d0", name: "Z-Image transformer shard 0 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard0.onnx_data`, sizeBytes: 137_625_600 },
+  { id: "zimage_sharded_xfmr_600b_d1", name: "Z-Image transformer shard 1 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard1.onnx_data`, sizeBytes: 412_876_800 },
+  { id: "zimage_sharded_xfmr_600b_d2", name: "Z-Image transformer shard 2 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard2.onnx_data`, sizeBytes: 530_841_600 },
+  { id: "zimage_sharded_xfmr_600b_d3", name: "Z-Image transformer shard 3 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard3.onnx_data`, sizeBytes: 530_841_600 },
+  { id: "zimage_sharded_xfmr_600b_d4", name: "Z-Image transformer shard 4 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard4.onnx_data`, sizeBytes: 412_876_800 },
+  { id: "zimage_sharded_xfmr_600b_d5", name: "Z-Image transformer shard 5 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard5.onnx_data`, sizeBytes: 0 },
 ];
 
 export const ZIMAGE_TURBO_SHARDED_MODEL: ZImageShardedModelSet = {
   id: "zimage_turbo_sharded",
   name: "Z-Image-Turbo Sharded (dev)",
   description:
-    "Dev/test: Z-Image-Turbo with 10-shard transformer (~170 MB/shard, " +
-    "plus a 332 MB lead shard and a 7 MB epilogue). Same output as the " +
-    "monolithic model but loads shards one at a time (with overlap for " +
-    "double-buffered creation) to fit mobile GPU memory budgets.",
+    "Dev/test: Z-Image-Turbo with a boundary-aware 6-shard transformer " +
+    "experiment. The sharder now prefers cleaner block-end cuts over raw " +
+    "byte-greedy ones, producing a very small lead shard, one larger " +
+    "catch-up shard, and mostly single-output later shards.",
   family: "zimage",
   capabilities: { txt2img: true, img2img: false },
   numInferenceSteps: 9,

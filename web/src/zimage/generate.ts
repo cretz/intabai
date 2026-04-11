@@ -287,10 +287,10 @@ const SHARD_PREFETCH_DEPTH = 0;
 // stack onto the critical path.
 //
 // Peak JS heap from data buffers: ~DATA_PREFETCH_DEPTH * shard_data_size.
-// At depth 2 with ~225 MB shards that is ~450 MB of prefetched data + the
-// one currently-being-mounted buffer during create, so worst case ~675 MB
-// JS heap. Still inside the mobile ceiling.
-const DATA_PREFETCH_DEPTH = 2;
+// With the onnx-600 experiment, shard data is closer to ~338-356 MB, so keep
+// the queue shallow until we know mobile can tolerate more than one read
+// ahead.
+const DATA_PREFETCH_DEPTH = 1;
 
 async function runShardedTransformerLoop(
   set: ZImageShardedModelSet, cache: ModelCache, numSteps: number,

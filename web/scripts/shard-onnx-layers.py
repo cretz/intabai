@@ -27,6 +27,7 @@ Example:
 """
 import argparse
 import json
+import math
 import re
 import sys
 from collections import defaultdict
@@ -453,8 +454,9 @@ def shard_model(model_path: Path, max_shard_size: int, output_path: Path) -> Non
     # --- Topological sort ---
     # The ONNX optimizer hoists ops out of block boundaries (e.g. Rotary
     # embedding pre/post nodes), so block-name-based partitioning creates
-    # unsolvable back-edges. Instead, topologically sort ALL nodes and
-    # greedily partition in topo order by weight budget.
+    # unsolvable back-edges. We still need a topo sort, but we keep it stable
+    # with respect to the original reordered file positions so "ready" nodes
+    # from much later blocks do not get pulled forward gratuitously.
     print("\ntopological sorting nodes...")
 
     # Build adjacency: node index -> set of successor node indices
@@ -476,17 +478,21 @@ def shard_model(model_path: Path, max_shard_size: int, output_path: Path) -> Non
                 successors[producer].append(i)
                 in_degree[i] += 1
 
-    # Kahn's algorithm
-    from collections import deque
-    queue = deque(i for i in range(n_nodes) if in_degree[i] == 0)
+    # Stable Kahn's algorithm: among all currently-ready nodes, emit the one
+    # that appeared earliest in the source file. This preserves the locality
+    # recovered by reorder-onnx-nodes.py while still producing a valid topo
+    # order for any DiT-style graph with hoisted helpers.
+    import heapq
+    queue = [i for i in range(n_nodes) if in_degree[i] == 0]
+    heapq.heapify(queue)
     topo_order: list[int] = []
     while queue:
-        node_idx = queue.popleft()
+        node_idx = heapq.heappop(queue)
         topo_order.append(node_idx)
         for succ in successors[node_idx]:
             in_degree[succ] -= 1
             if in_degree[succ] == 0:
-                queue.append(succ)
+                heapq.heappush(queue, succ)
     assert len(topo_order) == n_nodes, f"cycle detected: {n_nodes - len(topo_order)} nodes in cycle"
     print(f"  {n_nodes} nodes sorted")
 
@@ -508,21 +514,158 @@ def shard_model(model_path: Path, max_shard_size: int, output_path: Path) -> Non
     for init_name, pos in init_first_consumer.items():
         node_weight[pos] += init_sizes.get(init_name, 0)
 
-    # --- Greedy partition in topo order ---
-    node_shard = [0] * n_nodes  # indexed by original node index
-    shard_weights_list = [0]
-    current_shard = 0
+    total_weight = sum(init_sizes.values())
+    target_shards = max(1, math.ceil(total_weight / max_shard_size))
 
+    cumulative_weight = []
+    running = 0
+    for w in node_weight:
+        running += w
+        cumulative_weight.append(running)
+
+    # Count how many intermediate tensors stay live across each candidate cut.
+    # This is a generic proxy for "ugly" shard boundaries: fewer live tensors
+    # usually means fewer cross-shard inputs/outputs and less runtime overhead.
+    consumer_positions: dict[str, list[int]] = defaultdict(list)
     for pos, node_idx in enumerate(topo_order):
-        w = node_weight[pos]
-        if shard_weights_list[current_shard] + w > max_shard_size and shard_weights_list[current_shard] > 0:
-            current_shard += 1
-            shard_weights_list.append(0)
-        node_shard[node_idx] = current_shard
-        shard_weights_list[current_shard] += w
+        _, inputs, _, _ = nodes[node_idx]
+        for inp in inputs:
+            if inp and inp not in init_names_set and inp not in graph_input_names:
+                consumer_positions[inp].append(pos)
+    last_consumer = {name: poses[-1] for name, poses in consumer_positions.items()}
+    live_deltas = [0] * (n_nodes + 1)
+    for pos, node_idx in enumerate(topo_order):
+        _, _, outputs, _ = nodes[node_idx]
+        for out in outputs:
+            last = last_consumer.get(out)
+            if last is None or last <= pos:
+                continue
+            live_deltas[pos] += 1
+            live_deltas[last] -= 1
+    boundary_live_edges = [0] * max(0, n_nodes - 1)
+    active = 0
+    for pos in range(n_nodes - 1):
+        active += live_deltas[pos]
+        boundary_live_edges[pos] = active
 
-    n_shards = current_shard + 1
-    print(f"\npartition: {n_shards} shards (max target: {format_size(max_shard_size)})")
+    # Candidate cuts: end of a detected block in topo order. This keeps the
+    # heuristic generic for DiT-style exports that use "...<family>.<idx>..."
+    # naming, while still falling back later if no such structure exists.
+    candidate_cuts: list[tuple[int, str, int]] = []
+    for pos in range(n_nodes - 1):
+        block = extract_block_prefix(nodes[topo_order[pos]][0])
+        next_block = extract_block_prefix(nodes[topo_order[pos + 1]][0])
+        if block and block != next_block:
+            candidate_cuts.append((pos, block, boundary_live_edges[pos]))
+
+    # --- Boundary-aware partition in topo order ---
+    node_shard = [0] * n_nodes  # indexed by original node index
+    cut_positions: list[int] = []
+
+    if candidate_cuts and target_shards > 1:
+        print(
+            f"\npartitioning at block boundaries "
+            f"({len(candidate_cuts)} candidates, target ~{target_shards} shards)..."
+        )
+        current_pos = -1
+        candidate_start = 0
+        soft_cap_bytes = max_shard_size
+        live_edge_cost = 128 * 1024 * 1024  # 1 live tensor ~= 128 MB size drift
+
+        for shard_idx in range(target_shards - 1):
+            remaining_shards = target_shards - shard_idx
+            consumed = cumulative_weight[current_pos] if current_pos >= 0 else 0
+            remaining_weight = total_weight - consumed
+            target_weight = remaining_weight / remaining_shards
+            min_weight = target_weight * (0.25 if shard_idx == 0 else 0.55)
+            hard_max = max(soft_cap_bytes * 1.45, target_weight * 1.45)
+
+            best = None
+            best_idx = None
+            for ci in range(candidate_start, len(candidate_cuts)):
+                cut_pos, block_name, live_edges = candidate_cuts[ci]
+                if cut_pos <= current_pos:
+                    continue
+                seg_weight = cumulative_weight[cut_pos] - consumed
+                if seg_weight < min_weight:
+                    continue
+                if seg_weight > hard_max and best is not None:
+                    break
+                score = live_edges * live_edge_cost + abs(seg_weight - target_weight)
+                # If the first shard can end at a very clean boundary, prefer
+                # that even if it is smaller than the byte target.
+                if shard_idx == 0 and live_edges <= 16:
+                    score -= 256 * 1024 * 1024
+                if best is None or score < best[0]:
+                    best = (score, cut_pos, block_name, live_edges, seg_weight)
+                    best_idx = ci
+
+            if best is None:
+                # Fallback: pick the first later candidate, or stop cutting if
+                # there are none. The per-node greedy fallback below will still
+                # produce a valid partition if this happens often.
+                for ci in range(candidate_start, len(candidate_cuts)):
+                    cut_pos, block_name, live_edges = candidate_cuts[ci]
+                    if cut_pos > current_pos:
+                        seg_weight = cumulative_weight[cut_pos] - consumed
+                        best = (0, cut_pos, block_name, live_edges, seg_weight)
+                        best_idx = ci
+                        break
+            if best is None:
+                break
+
+            _, cut_pos, block_name, live_edges, seg_weight = best
+            cut_positions.append(cut_pos)
+            current_pos = cut_pos
+            candidate_start = (best_idx + 1) if best_idx is not None else candidate_start
+            print(
+                f"  cut {len(cut_positions) - 1}: after {block_name} "
+                f"({format_size(int(seg_weight))}, {live_edges} live tensors)"
+            )
+
+    # If the boundary heuristic could not find enough good cut points, finish
+    # with the original greedy byte-budget partitioner.
+    remaining_cut_target = max(0, target_shards - 1 - len(cut_positions))
+    if remaining_cut_target:
+        shard_weights_list = []
+        current_shard = 0
+        current_cut_idx = 0
+        next_cut = cut_positions[current_cut_idx] if cut_positions else None
+        shard_weights_list.append(0)
+        for pos, node_idx in enumerate(topo_order):
+            if next_cut is not None and pos > next_cut:
+                current_shard += 1
+                shard_weights_list.append(0)
+                current_cut_idx += 1
+                next_cut = cut_positions[current_cut_idx] if current_cut_idx < len(cut_positions) else None
+            w = node_weight[pos]
+            if (
+                next_cut is None
+                and remaining_cut_target > 0
+                and shard_weights_list[current_shard] + w > max_shard_size
+                and shard_weights_list[current_shard] > 0
+            ):
+                current_shard += 1
+                shard_weights_list.append(0)
+                remaining_cut_target -= 1
+            node_shard[node_idx] = current_shard
+            shard_weights_list[current_shard] += w
+    else:
+        current_shard = 0
+        current_cut_idx = 0
+        next_cut = cut_positions[current_cut_idx] if cut_positions else None
+        shard_weights_list = [0]
+        for pos, node_idx in enumerate(topo_order):
+            if next_cut is not None and pos > next_cut:
+                current_shard += 1
+                shard_weights_list.append(0)
+                current_cut_idx += 1
+                next_cut = cut_positions[current_cut_idx] if current_cut_idx < len(cut_positions) else None
+            node_shard[node_idx] = current_shard
+            shard_weights_list[current_shard] += node_weight[pos]
+
+    n_shards = max(node_shard) + 1
+    print(f"\npartition: {n_shards} shards (soft target: {format_size(max_shard_size)})")
     for i in range(n_shards):
         print(f"  shard {i}: {format_size(shard_weights_list[i])}")
 
