@@ -731,9 +731,29 @@ def shard_model(model_path: Path, max_shard_size: int, output_path: Path) -> Non
     # shard incrementally (shard 0 first, using known graph input types, then
     # each subsequent shard using types learned from prior shards' outputs).
     # Each shard is loaded one at a time (~500 MB max) to keep RAM low.
+    #
+    # In the same pass we also emit a per-shard external data file: we walk
+    # the shard's external initializers, copy their bytes out of the source
+    # _data file into a fresh per-shard buffer, and rewrite each initializer's
+    # `external_data` entries to reference the new per-shard file at its new
+    # offset. This means each shard session only mmaps/loads the bytes it
+    # actually needs (~150-350 MB) instead of the full 2 GB shared file.
     print("\ninferring boundary tensor types (incremental shape inference)...")
     import onnx
     from onnx import shape_inference
+
+    # Cache of open source data file handles (keyed by `location` string
+    # written in the source TensorProto.external_data entries). Opened once
+    # per unique location to avoid re-opening the 2 GB file per shard.
+    source_data_handles: dict[str, object] = {}
+    source_dir = model_path.parent
+
+    def get_source_handle(location: str):
+        if location not in source_data_handles:
+            source_data_handles[location] = open(source_dir / location, "rb")
+        return source_data_handles[location]
+
+    per_shard_data_sizes: list[int] = []
 
     # Seed with original graph input/output types
     known_types: dict[str, tuple[int, list]] = {}
@@ -792,14 +812,79 @@ def shard_model(model_path: Path, max_shard_size: int, output_path: Path) -> Non
         if n_fixed:
             print(f"  shard {i}: defaulted {n_fixed} UNDEFINED types to FLOAT16")
 
-        # Re-save with correct types
+        # Extract a per-shard external data file. For each external
+        # initializer, read `length` bytes from the source data file at the
+        # source `offset`, append to this shard's buffer, then rewrite the
+        # initializer's external_data entries so `location` points at the
+        # new per-shard file and `offset` points at the new position.
+        shard_data_bytes = bytearray()
+        n_ext = 0
+        for init in model.graph.initializer:
+            if init.data_location != onnx.TensorProto.EXTERNAL:
+                continue
+            src_loc: str | None = None
+            src_offset = 0
+            length = 0
+            for entry in init.external_data:
+                if entry.key == "location":
+                    src_loc = entry.value
+                elif entry.key == "offset":
+                    src_offset = int(entry.value)
+                elif entry.key == "length":
+                    length = int(entry.value)
+            if src_loc is None:
+                print(f"  shard {i}: initializer {init.name!r} has no external location")
+                sys.exit(1)
+            handle = get_source_handle(src_loc)
+            handle.seek(src_offset)
+            data = handle.read(length)
+            if len(data) != length:
+                print(f"  shard {i}: short read for {init.name!r} "
+                      f"({len(data)} of {length} bytes)")
+                sys.exit(1)
+            new_offset = len(shard_data_bytes)
+            shard_data_bytes.extend(data)
+            new_location = f"{stem}_shard{i}.onnx_data"
+            for entry in init.external_data:
+                if entry.key == "location":
+                    entry.value = new_location
+                elif entry.key == "offset":
+                    entry.value = str(new_offset)
+                # length stays the same
+            n_ext += 1
+
+        shard_data_path = shard_path.parent / f"{stem}_shard{i}.onnx_data"
+        shard_data_path.write_bytes(bytes(shard_data_bytes))
+        per_shard_data_sizes.append(len(shard_data_bytes))
+        print(f"  shard {i}: wrote {shard_data_path.name} "
+              f"({format_size(len(shard_data_bytes))}, {n_ext} initializers)")
+
+        # Re-save with correct types and rewritten external_data references.
         onnx.save(model, str(shard_path))
         shard_files[i] = shard_path.read_bytes()
         del model
+        del shard_data_bytes
 
         n_in = sum(1 for _ in onnx.load(str(shard_path), load_external_data=False).graph.input)
         n_out = sum(1 for _ in onnx.load(str(shard_path), load_external_data=False).graph.output)
         print(f"  shard {i}: {format_size(len(shard_files[i]))} ({n_in} in, {n_out} out)")
+
+    # Done with source data files; close the handles.
+    for h in source_data_handles.values():
+        h.close()
+    source_data_handles.clear()
+
+    # Per-shard data summary and duplication stats.
+    total_shard_data = sum(per_shard_data_sizes)
+    unique_init_bytes = sum(init_sizes.values())
+    extra = max(0, total_shard_data - unique_init_bytes)
+    dup_pct = (100.0 * extra / unique_init_bytes) if unique_init_bytes else 0.0
+    print("\nper-shard data summary:")
+    for i, size in enumerate(per_shard_data_sizes):
+        print(f"  shard {i}: {format_size(size)}")
+    print(f"  total across shards: {format_size(total_shard_data)}")
+    print(f"  unique initializer bytes: {format_size(unique_init_bytes)}")
+    print(f"  duplication overhead: {format_size(extra)} ({dup_pct:.1f}%)")
 
     # --- Verify each shard ---
     print("\nverifying shards...")

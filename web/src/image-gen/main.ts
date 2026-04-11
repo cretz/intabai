@@ -122,6 +122,7 @@ const settingsStore = new PersistedSettingsStore<ImageGenSettings>("intabai-imag
 const modelManagerContainer = document.getElementById("model-manager") as HTMLDivElement;
 const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
 const debugLogCheck = document.getElementById("debug-log-check") as HTMLInputElement;
+const debugLogPane = document.getElementById("debug-log-pane") as HTMLTextAreaElement;
 const promptInput = document.getElementById("prompt") as HTMLTextAreaElement;
 const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
 const widthInput = document.getElementById("width-input") as HTMLInputElement;
@@ -451,7 +452,22 @@ generateBtn.addEventListener("click", async () => {
   statsLine.textContent = "";
 
   const debugEnabled = settings.debugLog;
-  const log = debugEnabled ? (msg: string) => console.log("[image-gen] " + msg) : (_: string) => {};
+  if (debugEnabled) {
+    debugLogPane.value = "";
+    debugLogPane.style.display = "block";
+  } else {
+    debugLogPane.style.display = "none";
+  }
+  const appendDebug = (msg: string) => {
+    debugLogPane.value += msg + "\n";
+    debugLogPane.scrollTop = debugLogPane.scrollHeight;
+  };
+  const log = debugEnabled
+    ? (msg: string) => {
+      console.log("[image-gen] " + msg);
+      appendDebug(msg);
+    }
+    : (_: string) => {};
   if (debugEnabled && "gpu" in navigator) {
     navigator.gpu.requestAdapter().then(a => {
       const name = a?.info?.description || a?.info?.device || a?.info?.vendor || "unknown";

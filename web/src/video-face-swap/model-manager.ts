@@ -105,10 +105,22 @@ export class ModelManager {
     const progressText = div.querySelector(".progress-text") as HTMLElement;
     btn.disabled = true;
 
+    // Downloads now run in parallel, so per-file events interleave. Track
+    // latest bytesLoaded per fileId and sum for an overall progress bar.
+    const files = allFiles(set);
+    const totalBytes = set.primary.sizeBytes + depsSize(set);
+    const bytesByFile = new Map<string, number>();
+    for (const f of files) {
+      bytesByFile.set(f.id, (await this.cache.isFileCached(f)) ? f.sizeBytes : 0);
+    }
+
     try {
-      await this.cache.downloadFiles(allFiles(set), (p: DownloadProgress) => {
-        const pct = ((p.bytesLoaded / p.bytesTotal) * 100).toFixed(0);
-        progressText.textContent = ` ${p.fileName}: ${pct}% (${p.fileIndex + 1}/${p.fileCount})`;
+      await this.cache.downloadFiles(files, (p: DownloadProgress) => {
+        bytesByFile.set(p.fileId, p.bytesLoaded);
+        let overallBytes = 0;
+        for (const v of bytesByFile.values()) overallBytes += v;
+        const pct = ((overallBytes / totalBytes) * 100).toFixed(0);
+        progressText.textContent = ` ${pct}% (${formatBytes(overallBytes)} / ${formatBytes(totalBytes)})`;
       });
 
       this.readySets.add(set.id);

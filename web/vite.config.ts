@@ -35,7 +35,11 @@ export default defineConfig({
           res.setHeader("Content-Length", stat.size);
           res.setHeader("Content-Type", "application/octet-stream");
           res.setHeader("Access-Control-Allow-Origin", "*");
-          createReadStream(filePath).pipe(res);
+          // Bump highWaterMark from the 64 KB default to 4 MB so LAN
+          // delivery to the phone isn't syscall-bound. On loopback 64 KB
+          // is fine, but over WiFi the many small pipeline steps leave
+          // a lot of bandwidth unused.
+          createReadStream(filePath, { highWaterMark: 4 * 1024 * 1024 }).pipe(res);
         });
       },
     },

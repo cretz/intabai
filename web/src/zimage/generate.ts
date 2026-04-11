@@ -251,21 +251,56 @@ async function runMonolithicTransformerLoop(
 }
 
 // --- Sharded transformer loop ---
-// Runs N shard sessions sequentially per step. Inter-shard tensors are
-// passed as CPU tensors (small activation vectors). Sessions are released
-// between shards to free GPU weight memory (critical for mobile).
-// The shared external data file is loaded once as a blob URL and reused
-// across all shard session creations.
+// Runs N shard sessions per step with create/run overlap. Inter-shard tensors
+// are passed as CPU tensors; each shard session is released immediately after
+// its run so ORT reclaims weight memory. The shared external data file is
+// loaded once as a blob URL and reused across every shard create in the loop.
+//
+// ORT-web's WebGPU EP serializes InferenceSession.create() with a mutex
+// ("another WebGPU EP inference session is being created"), so only one
+// create can ever be in flight. What we CAN overlap is the RUN of shard N
+// with the CREATE of shard N+1. Implementation: a single-slot promise
+// ("create queue") holds the next shard's in-flight create. On each
+// iteration we pop (await) the slot to get the current shard, immediately
+// refill the slot by kicking off the next shard's create, then run +
+// release the current shard. The "refill happens before run" ordering is
+// what produces the overlap — by the time the next iteration pops the
+// slot, ORT has been working on its create during the previous run.
+//
+// Effective per-step cost drops from `nShards * (create + run)` (strict
+// sequential) toward `create + nShards * run` (first shard pays full create,
+// each subsequent shard's create hides behind the prior run), assuming ORT
+// does not also serialize run-vs-create across sessions.
+
+// Number of shard session creates allowed to be in flight IN ADDITION to
+// the currently-running shard. The create queue intentionally trails the
+// data queue by one slot: with DATA_PREFETCH_DEPTH=2 and this set to 1, one
+// future shard can already be in `InferenceSession.create()` while another
+// future shard's data buffer is still waiting behind it in dataQueue.
+const SHARD_PREFETCH_DEPTH = 0;
+
+// Number of shard *data* buffers to keep pre-loaded in RAM ahead of the
+// currently-executing shard. Session create/run/release remain strictly
+// sequential (SHARD_PREFETCH_DEPTH=0 above). Data loading is the only
+// thing we overlap: shard N+k's bytes can be coming off OPFS while shard N
+// is creating / running / releasing, so the OPFS read latency does not
+// stack onto the critical path.
+//
+// Peak JS heap from data buffers: ~DATA_PREFETCH_DEPTH * shard_data_size.
+// At depth 2 with ~225 MB shards that is ~450 MB of prefetched data + the
+// one currently-being-mounted buffer during create, so worst case ~675 MB
+// JS heap. Still inside the mobile ceiling.
+const DATA_PREFETCH_DEPTH = 2;
 
 async function runShardedTransformerLoop(
   set: ZImageShardedModelSet, cache: ModelCache, numSteps: number,
   initialLatent: Float32Array, encoderHiddenState: Float32Array,
-  latentH: number, latentW: number, latentLen: number, sequenceLength: number,
+  latentH: number, latentW: number, _latentLen: number, sequenceLength: number,
   cb: GenerateCallbacks, log: (msg: string) => void,
 ): Promise<Float32Array> {
   const shards = set.transformerShards;
   const nShards = shards.length;
-  log(`[zimage-sharded] ${nShards} shards, ${numSteps} steps`);
+  log(`[zimage-sharded] ${nShards} shards, ${numSteps} steps, shardPrefetch=${SHARD_PREFETCH_DEPTH}, dataPrefetch=${DATA_PREFETCH_DEPTH}`);
 
   // Keep the scheduler on WASM so the shard sessions are the only live
   // WebGPU sessions during the DiT loop. ORT-web's WebGPU allocator/cache
@@ -296,114 +331,270 @@ async function runShardedTransformerLoop(
   cb.advance();
   cb.checkAborted();
 
-  let stepTimeSum = 0;
-  let stepTimeCount = 0;
+  // Load a shard's external data file into a fresh Uint8Array. Used by the
+  // dataQueue prefetcher below so that OPFS reads can overlap with the
+  // current shard's create/run/release phases instead of blocking at the
+  // start of the next shard's create.
+  const loadShardData = (shardIdx: number): Promise<Uint8Array> =>
+    cache.loadFile(shards[shardIdx].data).then((buf) => new Uint8Array(buf));
+
+  // Create one shard InferenceSession using pre-loaded data bytes. Splitting
+  // data load from create is what lets us overlap OPFS reads with the
+  // previous shard's run (via the dataQueue below) while still keeping the
+  // create itself strictly sequential (so there is a zero-session window
+  // between shards for mobile WebGPU buffer reclaim).
+  //
+  // ORT-web's createSession calls loadFile on whatever we pass for
+  // externalData.data. loadFile short-circuits on a Uint8Array and returns
+  // it directly (ort.all.mjs:25437); mountExternalData is O(1) (just stores
+  // a reference in a Map). So passing our pre-read Uint8Array here makes
+  // create skip the fetch entirely - it just mounts, wasm copies in, unmount.
+  //
+  // The graph blob URL is still created and revoked per shard (the graph
+  // file is ~170 MB and only touched on its own shard's create).
+  const createShardSession = async (shardIdx: number, dataBytes: Uint8Array): Promise<ort.InferenceSession> => {
+    const shard = shards[shardIdx];
+    const { url: graphUrl, revoke: revokeGraph } =
+      await cache.loadFileAsBlobUrl(shard.graph);
+    try {
+      const sessionOptions: ort.InferenceSession.SessionOptions = {
+        executionProviders: defaultProviders(),
+        graphOptimizationLevel: "all",
+      };
+      // ORT's type for externalData.data is `string`, but the runtime
+      // accepts Uint8Array / Blob / File too (see loadFile in ort.all.mjs).
+      (sessionOptions as unknown as { externalData: Array<{ path: string; data: Uint8Array }> })
+        .externalData = [{ path: shard.dataPath, data: dataBytes }];
+      return await ort.InferenceSession.create(graphUrl, sessionOptions);
+    } finally {
+      revokeGraph();
+    }
+  };
+
+  // FIFO of in-flight shard data buffers. Capacity is DATA_PREFETCH_DEPTH:
+  // at steady state this many shard-data OPFS reads are either in flight or
+  // completed-and-pending-consumption. Primed at loop entry with the first
+  // DEPTH shards so iter 0's create doesn't pay the full OPFS read latency.
+  //
+  // A new data load is pushed at the end of each iteration (after we've
+  // null'd our local reference to the current shard's bytes, so peak JS
+  // heap doesn't include both the current shard's data AND the refilled
+  // tail of the queue).
+  const totalFlat = numSteps * nShards;
+  const dataQueue: Array<Promise<Uint8Array>> = [];
+  const primeCount = Math.min(DATA_PREFETCH_DEPTH, totalFlat);
+  for (let i = 0; i < primeCount; i++) {
+    dataQueue.push(loadShardData(i % nShards));
+  }
+
+  type PendingShardSession = {
+    flatIdx: number;
+    shardIdx: number;
+    session: ort.InferenceSession;
+  };
+
+  const effectiveCreatePrefetchDepth = Math.min(
+    SHARD_PREFETCH_DEPTH,
+    Math.max(0, DATA_PREFETCH_DEPTH - 1),
+  );
+  const createQueue: Array<Promise<PendingShardSession>> = [];
+
+  const enqueueCreate = (flatIdx: number): void => {
+    const shardIdx = flatIdx % nShards;
+    const dataPromise = dataQueue.shift();
+    if (!dataPromise) throw new Error(`data queue empty while enqueueing create at flatIdx ${flatIdx}`);
+    createQueue.push((async () => {
+      const dataBytes = await dataPromise;
+      const session = await createShardSession(shardIdx, dataBytes);
+      return { flatIdx, shardIdx, session };
+    })());
+  };
+
+  for (let i = 0; i < Math.min(effectiveCreatePrefetchDepth, totalFlat); i++) {
+    enqueueCreate(i);
+  }
+
+  // Drain pending data loads on error/abort. These are just Uint8Arrays;
+  // nothing to release, just await to avoid unhandled-rejection noise.
+  const drainDataQueue = async (): Promise<void> => {
+    while (dataQueue.length > 0) {
+      try { await dataQueue.shift(); } catch { /* best-effort */ }
+    }
+  };
+
+  const drainCreateQueue = async (): Promise<void> => {
+    while (createQueue.length > 0) {
+      try {
+        const pending = await createQueue.shift();
+        await pending?.session.release();
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+
+  // Averaging is done per-SHARD rather than per-step so the ETA updates
+  // at shard granularity and is responsive to per-shard variance (the
+  // first shard of each step is usually slower because it includes the
+  // leading hidden_states transfer, etc.).
+  let shardTimeSum = 0;
+  let shardTimeCount = 0;
   const tLoop = performance.now();
 
-  for (let step = 0; step < numSteps; step++) {
-    const stepDisplay = step + 1;
-    const tStep = performance.now();
+  try {
+    for (let step = 0; step < numSteps; step++) {
+      const stepDisplay = step + 1;
+      const tStep = performance.now();
 
-    const cpuTimestep = new ort.Tensor("float32", Float32Array.from([schedule.timesteps[step]]), [1]);
-    // hidden_states for shard 0 comes from the cached scheduler output (or
-    // initial latent for step 0). Reading from GPU happens at the END of the
-    // previous step while the device is still healthy - by the time we get
-    // here, the N shard release cycles may have put the device in a state
-    // where readGpu fails with "buffer associated with ... cannot be used".
-    const cpuHidden = new ort.Tensor("float32", cachedHiddenData, hiddenDims);
+      const cpuTimestep = new ort.Tensor("float32", Float32Array.from([schedule.timesteps[step]]), [1]);
+      // hidden_states for shard 0 comes from the cached scheduler output (or
+      // initial latent for step 0). We never read this from GPU because the
+      // sharded path keeps inter-shard values on CPU.
+      const cpuHidden = new ort.Tensor("float32", cachedHiddenData, hiddenDims);
 
-    // Accumulate inter-shard tensors. Shard 0 gets the 3 graph inputs;
-    // subsequent shards get the union of all prior shard outputs.
-    const tensorPool: Record<string, ort.Tensor> = {
-      hidden_states: cpuHidden,
-      timestep: cpuTimestep,
-      encoder_hidden_states: cpuEncHidden,
-    };
+      // Accumulate inter-shard tensors. Shard 0 gets the 3 graph inputs;
+      // subsequent shards get the union of all prior shard outputs.
+      const tensorPool: Record<string, ort.Tensor> = {
+        hidden_states: cpuHidden,
+        timestep: cpuTimestep,
+        encoder_hidden_states: cpuEncHidden,
+      };
 
-    for (let si = 0; si < nShards; si++) {
-      cb.status(`step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards}...`);
+      for (let si = 0; si < nShards; si++) {
+        cb.status(`step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards}...`);
+        const flatIdx = step * nShards + si;
+        const tShard = performance.now();
 
-      // --- Phase: create session ---
-      const tCreate = performance.now();
-      const sess = await createZImageSession(cache, shards[si], defaultProviders());
-      const createMs = performance.now() - tCreate;
+        let sess: ort.InferenceSession;
+        let dataWaitMs = 0;
+        let createMs = 0;
+        if (effectiveCreatePrefetchDepth > 0) {
+          const tCreateWait = performance.now();
+          const pendingCreate = createQueue.shift();
+          if (!pendingCreate) throw new Error(`create queue empty at flatIdx ${flatIdx}`);
+          const ready = await pendingCreate;
+          if (ready.flatIdx !== flatIdx || ready.shardIdx !== si) {
+            throw new Error(`create queue mismatch at flatIdx ${flatIdx}: got flatIdx=${ready.flatIdx}, shard=${ready.shardIdx}`);
+          }
+          sess = ready.session;
+          createMs = performance.now() - tCreateWait;
+        } else {
+          // --- Phase: await head of data FIFO ---
+          // If prefetch kept up, this await is ~0 because the OPFS read for
+          // this shard finished while the previous shard was running. If the
+          // read is slower than run+release, we pay the residual here.
+          const tDataWait = performance.now();
+          const dataPromise = dataQueue.shift();
+          if (!dataPromise) throw new Error(`data queue empty at flatIdx ${flatIdx}`);
+          const dataBytes = await dataPromise;
+          dataWaitMs = performance.now() - tDataWait;
 
-      // Build feed from the tensor pool - only pass inputs this shard needs
-      const feed: Record<string, ort.Tensor> = {};
-      for (const name of sess.inputNames) {
-        const t = tensorPool[name];
-        if (!t) throw new Error(`shard ${si} needs input "${name}" not in tensor pool`);
-        feed[name] = t;
-      }
+          // --- Phase: create (sequential) ---
+          const tCreate = performance.now();
+          sess = await createShardSession(si, dataBytes);
+          createMs = performance.now() - tCreate;
+        }
 
-      // --- Phase: run ---
-      const tRun = performance.now();
-      const results = await sess.run(feed);
-      const runMs = performance.now() - tRun;
+        // --- Phase: refill data queue ---
+        // Push the next shard's data load. With DEPTH=2 this means one
+        // shard's worth of data is always being fetched in the background
+        // while we run+release the current shard, and another is already
+        // sitting at the head of the queue ready for the next iteration.
+        const nextDataFlat = flatIdx + DATA_PREFETCH_DEPTH;
+        if (nextDataFlat < totalFlat) {
+          dataQueue.push(loadShardData(nextDataFlat % nShards));
+        }
 
-      // Copy data out of ORT's result tensors into the pool, then dispose
-      // all results so ORT's internal GPU buffers are freed before release.
-      for (const key in results) {
-        const rt = results[key];
-        const src = rt.data;
-        // Copy using the same typed array constructor to preserve dtype
-        const copy = new (src.constructor as { new(a: ArrayLike<never>): typeof src })(
-          src as unknown as ArrayLike<never>,
-        );
-        tensorPool[key] = new ort.Tensor(rt.type, copy, rt.dims);
-        rt.dispose();
-      }
+        // --- Phase: refill create queue ---
+        // Consume the current head of dataQueue so one create stays one slot
+        // behind the data queue. That keeps one raw data buffer in reserve
+        // behind the in-flight create.
+        const nextCreateFlat = flatIdx + effectiveCreatePrefetchDepth;
+        if (effectiveCreatePrefetchDepth > 0 && nextCreateFlat < totalFlat) {
+          enqueueCreate(nextCreateFlat);
+        }
 
-      // --- Phase: release + GPU flush ---
-      const tRelease = performance.now();
-      await sess.release();
-      if (gpuDevice) {
+        // Build feed from the tensor pool - only pass inputs this shard needs
+        const feed: Record<string, ort.Tensor> = {};
+        for (const name of sess.inputNames) {
+          const t = tensorPool[name];
+          if (!t) throw new Error(`shard ${si} needs input "${name}" not in tensor pool`);
+          feed[name] = t;
+        }
+
+        // --- Phase: run ---
+        const tRun = performance.now();
+        const results = await sess.run(feed);
+        const runMs = performance.now() - tRun;
+
+        // Copy data out of ORT's result tensors into the pool, then dispose
+        // all results so ORT's internal GPU buffers are freed before release.
+        for (const key in results) {
+          const rt = results[key];
+          const src = rt.data;
+          // Copy using the same typed array constructor to preserve dtype
+          const copy = new (src.constructor as { new(a: ArrayLike<never>): typeof src })(
+            src as unknown as ArrayLike<never>,
+          );
+          tensorPool[key] = new ort.Tensor(rt.type, copy, rt.dims);
+          rt.dispose();
+        }
+
+        // --- Phase: release + GPU flush ---
+        const tRelease = performance.now();
+        await sess.release();
         gpuDevice.queue.submit([]);  // empty submit to flush pending frees
         await gpuDevice.queue.onSubmittedWorkDone();
+        const releaseMs = performance.now() - tRelease;
+
+        const shardMs = performance.now() - tShard;
+        shardTimeSum += shardMs;
+        shardTimeCount++;
+        const avgShardMs = shardTimeSum / shardTimeCount;
+        const shardsRemaining = totalFlat - flatIdx - 1;
+        const etaSec = (avgShardMs * shardsRemaining) / 1000;
+        cb.stats(
+          `step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${formatMs(avgShardMs)} avg/shard | ~${formatEta(etaSec)} left`,
+        );
+        log(`  [zimage-sharded] step ${stepDisplay} shard ${si}: dataWait ${dataWaitMs.toFixed(0)}ms, create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms (total ${shardMs.toFixed(0)}ms)`);
       }
-      const releaseMs = performance.now() - tRelease;
 
-      log(`  [zimage-sharded] step ${stepDisplay} shard ${si}: create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms`);
+      // Final shard output: unified_results -> noise_pred for scheduler
+      const noisePredTensor = tensorPool["unified_results"];
+      if (!noisePredTensor) throw new Error("final shard did not produce unified_results");
+
+      // Preserve the existing GPU upload here as a lightweight validation that
+      // the final shard output is still representable in the same boundary form
+      // the monolithic path uses, but run the scheduler itself on CPU/WASM.
+      const noisePredData = noisePredTensor.data as Float32Array;
+      writeGpu(gpuDevice, gpuNoisePred, noisePredData);
+
+      // Scheduler Euler step on CPU/WASM. This avoids keeping a persistent
+      // WebGPU session alive across the shard create/release churn.
+      const schedResults = await schedSess.run({
+        noise_pred: new ort.Tensor("float32", noisePredData, noiseDims),
+        latents: new ort.Tensor("float32", cachedHiddenData, hiddenDims),
+        step_info: new ort.Tensor("float32", Float32Array.from([step, numSteps]), [2]),
+      });
+      const nextLatents = schedResults["latents_out"];
+      if (!nextLatents) throw new Error('scheduler did not produce "latents_out"');
+      cachedHiddenData = new Float32Array(nextLatents.data as Float32Array);
+      nextLatents.dispose();
+
+      const stepMs = performance.now() - tStep;
+      log(`  [zimage-sharded] step ${stepDisplay} total (${stepMs.toFixed(0)} ms)`);
+      cb.advance();
+      cb.checkAborted();
     }
-
-    // Final shard output: unified_results -> noise_pred for scheduler
-    const noisePredTensor = tensorPool["unified_results"];
-    if (!noisePredTensor) throw new Error("final shard did not produce unified_results");
-
-    // Preserve the existing GPU upload here as a lightweight validation that
-    // the final shard output is still representable in the same boundary form
-    // the monolithic path uses, but run the scheduler itself on CPU/WASM.
-    const noisePredData = noisePredTensor.data as Float32Array;
-    writeGpu(gpuDevice, gpuNoisePred, noisePredData);
-
-    // Scheduler Euler step on CPU/WASM. This avoids keeping a persistent
-    // WebGPU session alive across the shard create/release churn.
-    const schedResults = await schedSess.run({
-      noise_pred: new ort.Tensor("float32", noisePredData, noiseDims),
-      latents: new ort.Tensor("float32", cachedHiddenData, hiddenDims),
-      step_info: new ort.Tensor("float32", Float32Array.from([step, numSteps]), [2]),
-    });
-    const nextLatents = schedResults["latents_out"];
-    if (!nextLatents) throw new Error('scheduler did not produce "latents_out"');
-    cachedHiddenData = new Float32Array(nextLatents.data as Float32Array);
-    nextLatents.dispose();
-
-    const stepMs = performance.now() - tStep;
-    stepTimeSum += stepMs;
-    stepTimeCount++;
-    const avgMs = stepTimeSum / stepTimeCount;
-    const remaining = numSteps - stepDisplay;
-    const etaSec = (avgMs * remaining) / 1000;
-    cb.stats(
-      `step ${stepDisplay}/${numSteps} | ${formatMs(avgMs)} avg/step | ~${formatEta(etaSec)} left`,
-    );
-    log(`  [zimage-sharded] step ${stepDisplay} total (${stepMs.toFixed(0)} ms)`);
-    cb.advance();
-    cb.checkAborted();
+  } catch (err) {
+    await drainCreateQueue();
+    await drainDataQueue();
+    throw err;
   }
   log(`[zimage-sharded] DiT loop total: ${((performance.now() - tLoop) / 1000).toFixed(1)} s`);
 
   const latent = cachedHiddenData;
+  await drainCreateQueue();
   await schedSess.release();
   log("[zimage-sharded] scheduler released");
   return latent;

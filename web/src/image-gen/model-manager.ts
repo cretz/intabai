@@ -153,34 +153,24 @@ export class ImageGenModelManager {
     btn.disabled = true;
 
     const files = modelSetFiles(set);
-    // Total-bytes progress: ModelCache emits per-file events. We sum the
-    // declared per-file sizes to get an overall denominator and track a
-    // "baseline" of fully-completed file bytes so the running total is
-    // (baseline + currentFileBytesLoaded). Files that were already cached
-    // at start contribute their full size to baseline so the bar starts
-    // partway through on a resume.
-    const sizeById = new Map<string, number>();
-    for (const f of files) sizeById.set(f.id, f.sizeBytes);
+    // Total-bytes progress: ModelCache now downloads multiple files in
+    // parallel, so progress events from different files interleave. We keep
+    // a per-fileId map of "latest bytesLoaded" and sum across all entries to
+    // compute the overall bar. Files already cached at start are seeded with
+    // their full declared size so the bar reflects real progress on resume.
     const totalBytes = totalSetBytes(set);
-    let baselineBytes = 0;
+    const bytesByFile = new Map<string, number>();
     for (const f of files) {
-      if (await this.cache.isFileCached(f)) baselineBytes += f.sizeBytes;
+      bytesByFile.set(f.id, (await this.cache.isFileCached(f)) ? f.sizeBytes : 0);
     }
-    const folded = new Set<string>();
 
     try {
       await this.cache.downloadFiles(files, (p: DownloadProgress) => {
-        const overallBytes = baselineBytes + p.bytesLoaded;
+        bytesByFile.set(p.fileId, p.bytesLoaded);
+        let overallBytes = 0;
+        for (const v of bytesByFile.values()) overallBytes += v;
         const pct = ((overallBytes / totalBytes) * 100).toFixed(1);
-        progressText.textContent = ` ${pct}% (${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}) - ${p.fileName}`;
-        if (p.bytesLoaded === p.bytesTotal && !folded.has(p.fileId)) {
-          // File finished. Fold its declared size into baseline so the next
-          // file's events extend the bar from the right place. Use the
-          // declared size, not the observed bytesTotal, so the bar's
-          // denominator (totalBytes) and numerator stay consistent.
-          baselineBytes += sizeById.get(p.fileId) ?? 0;
-          folded.add(p.fileId);
-        }
+        progressText.textContent = ` ${pct}% (${formatBytes(overallBytes)} / ${formatBytes(totalBytes)})`;
       });
 
       this.readySets.add(set.id);

@@ -139,13 +139,36 @@ export class ModelCache {
   }
 
   /** Download every file in `files` that is not already cached. Files
-   *  already present are skipped silently. */
-  async downloadFiles(files: ModelFile[], onProgress: ProgressCallback): Promise<void> {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (await this.isFileCached(file)) continue;
-      await this.downloadFile(file, i, files.length, onProgress);
-    }
+   *  already present are skipped silently.
+   *
+   *  Up to `concurrency` files are fetched in parallel. This matters most on
+   *  the local dev-server proxy (where each file is served from disk and
+   *  serial transfers leave the link idle) but is also a speedup for HF
+   *  multi-file bundles. The browser's per-origin connection pool (commonly
+   *  6 sockets) naturally throttles when multiple files share a host, so it
+   *  is safe to pick a number and let the network layer handle it.
+   *
+   *  Progress events still fire per-file, so multiple files will be emitting
+   *  `bytesLoaded` concurrently. Callers that aggregate into a total-bytes
+   *  bar must track in-flight bytes per `fileId` (not just add the latest
+   *  event), because progress callbacks from different files will interleave. */
+  async downloadFiles(
+    files: ModelFile[],
+    onProgress: ProgressCallback,
+    concurrency = 4,
+  ): Promise<void> {
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= files.length) return;
+        const file = files[i];
+        if (await this.isFileCached(file)) continue;
+        await this.downloadFile(file, i, files.length, onProgress);
+      }
+    };
+    const workerCount = Math.max(1, Math.min(concurrency, files.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
   }
 
   async downloadFile(

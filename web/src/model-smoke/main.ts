@@ -558,17 +558,17 @@ async function downloadAll(comps: Component[]) {
     return;
   }
   const t0 = performance.now();
-  let totalLoaded = 0;
-  let totalSize = missing.reduce((s, f) => s + f.sizeBytes, 0);
+  const totalSize = missing.reduce((s, f) => s + f.sizeBytes, 0);
+  // Downloads run in parallel, so events interleave. Track per-fileId latest
+  // bytesLoaded and sum for the global bar.
+  const bytesByFile = new Map<string, number>();
   await cache.downloadFiles(files, (p) => {
+    bytesByFile.set(p.fileId, p.bytesLoaded);
+    let totalLoaded = 0;
+    for (const v of bytesByFile.values()) totalLoaded += v;
     setStatus(
-      `downloading ${p.fileName} (${p.fileIndex + 1}/${p.fileCount}) ${(p.bytesLoaded / 1024 / 1024).toFixed(1)} MB`,
+      `downloading ${(totalLoaded / 1024 / 1024).toFixed(1)} / ${(totalSize / 1024 / 1024).toFixed(1)} MB`,
     );
-    // Approximate global bar: scale current file fraction across remaining budget.
-    const frac = Math.min(1, p.bytesLoaded / Math.max(1, p.bytesTotal));
-    const fileApprox = missing[p.fileIndex]?.sizeBytes ?? p.bytesTotal;
-    const before = missing.slice(0, p.fileIndex).reduce((s, f) => s + f.sizeBytes, 0);
-    totalLoaded = before + fileApprox * frac;
     $progress.value = (totalLoaded / Math.max(1, totalSize)) * 100;
   });
   const dt = ((performance.now() - t0) / 1000).toFixed(1);
