@@ -4,6 +4,12 @@
 
 import { listModels, getModel, type ModelEntry } from "./models";
 import type { ReferenceFrame, VideoGenCapabilities } from "./pipeline";
+import { initThemeSelect } from "../shared/theme";
+
+{
+  const sel = document.getElementById("theme-select");
+  if (sel instanceof HTMLSelectElement) initThemeSelect(sel);
+}
 
 // --- DOM refs -----------------------------------------------------------
 

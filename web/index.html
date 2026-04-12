@@ -5,12 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>intabai - in-browser AI tools</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // No-flash theme apply: read stored preference before style.css
+      // loads so we never paint the wrong background. See src/shared/theme.ts.
+      (function () {
+        try {
+          var v = localStorage.getItem("intabai:theme");
+          if (v === "light" || v === "dark") {
+            document.documentElement.style.colorScheme = v;
+          }
+        } catch (e) {}
+      })();
+    </script>
     <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/src/index-main.ts"></script>
   </head>
   <body>
     <div class="topbar">
       <p>intabai</p>
-      <a href="https://github.com/cretz/intabai">github</a>
+      <div class="topbar-right">
+        <a href="https://github.com/cretz/intabai">github</a>
+        <select id="theme-select" class="theme-select" aria-label="theme">
+          <option value="auto">auto</option>
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+        </select>
+      </div>
     </div>
     <hr />
     <p>AI tools that run entirely in your browser. Nothing is uploaded. Ever.</p>

@@ -27,6 +27,12 @@ import {
   PersistedSettings as PersistedSettingsStore,
   isMobile,
 } from "../shared/persisted-settings";
+import { initThemeSelect } from "../shared/theme";
+
+{
+  const sel = document.getElementById("theme-select");
+  if (sel instanceof HTMLSelectElement) initThemeSelect(sel);
+}
 
 /** Per-model settings. Undefined means "use model default" (shown as
  *  placeholder text in the input, not an actual value). */

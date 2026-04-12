@@ -192,7 +192,7 @@ export class ImageGenModelManager {
       div.innerHTML =
         `<span style="flex:1">${label}</span>` +
         `<small>${totalSize}</small>` +
-        `<small style="color:green">cached</small> ` +
+        `<small class="cached-label">cached</small> ` +
         `<button class="delete-btn">delete</button>`;
       div.querySelector(".delete-btn")!.addEventListener("click", () => this.onDeleteSet(set, div));
     } else {

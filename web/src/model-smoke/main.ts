@@ -9,6 +9,12 @@
 import * as ort from "onnxruntime-web";
 
 import { ModelCache, type ModelFile } from "../shared/model-cache";
+import { initThemeSelect } from "../shared/theme";
+
+{
+  const sel = document.getElementById("theme-select");
+  if (sel instanceof HTMLSelectElement) initThemeSelect(sel);
+}
 
 // Sana DiT (1.2 GB external-data) blew the wasm32 4 GB cap when ORT-web
 // requested 4.41 GB initial linear memory. The biggest contributor to wasm

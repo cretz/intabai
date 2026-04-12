@@ -5,12 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>image gen - intabai</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // No-flash theme apply: read stored preference before style.css
+      // loads so we never paint the wrong background. See src/shared/theme.ts.
+      (function () {
+        try {
+          var v = localStorage.getItem("intabai:theme");
+          if (v === "light" || v === "dark") {
+            document.documentElement.style.colorScheme = v;
+          }
+        } catch (e) {}
+      })();
+    </script>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
     <div class="topbar">
       <p><a href="/">intabai</a> / image gen</p>
-      <a href="https://github.com/cretz/intabai/tree/main/web/tools/image-gen">github</a>
+      <div class="topbar-right">
+        <a href="https://github.com/cretz/intabai/tree/main/web/tools/image-gen">github</a>
+        <select id="theme-select" class="theme-select" aria-label="theme">
+          <option value="auto">auto</option>
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+        </select>
+      </div>
     </div>
     <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>
     <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>

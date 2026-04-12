@@ -9,6 +9,12 @@ import {
   PersistedSettings as PersistedSettingsStore,
   isMobile,
 } from "../shared/persisted-settings";
+import { initThemeSelect } from "../shared/theme";
+
+{
+  const sel = document.getElementById("theme-select");
+  if (sel instanceof HTMLSelectElement) initThemeSelect(sel);
+}
 
 // Persisted UI settings: everything that isn't per-video or per-face (so no
 // file inputs, no time ranges) so that the next visit can pick up where the
