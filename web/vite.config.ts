@@ -6,6 +6,8 @@ export default defineConfig({
   server: {
     // Allow large model file responses (no body size limit)
     headers: { "Access-Control-Allow-Origin": "*" },
+    hmr: false,
+    ws: false,
   },
   build: {
     outDir: "dist",

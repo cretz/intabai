@@ -77,11 +77,8 @@ let cachedTokenizer: any = null;
 
 const LATENT_CHANNELS = 16;
 
-// Fixed phase units: tokenize + text encode + load transformer + load vae
-const FIXED_PHASE_UNITS = 4;
-
 function estimate(input: GenerateInput): PipelineEstimate {
-  const totalUnits = FIXED_PHASE_UNITS + input.steps; // + 1 vae tile (no tiling for zimage)
+  const totalUnits = input.steps;
   return { totalUnits };
 }
 
@@ -183,7 +180,6 @@ async function runMonolithicTransformerLoop(
 
   const schedSess = await createZImageSession(cache, set.schedulerStep, defaultProviders());
   log("[zimage] scheduler step model loaded");
-  cb.advance();
   cb.checkAborted();
 
   // Capture GPU device AFTER session creation (ORT may init/change the device)
@@ -226,7 +222,7 @@ async function runMonolithicTransformerLoop(
   const tLoop = performance.now();
   for (let step = 0; step < numSteps; step++) {
     const stepDisplay = step + 1;
-    cb.status(`DiT step ${stepDisplay} / ${numSteps}...`);
+    cb.status("denoising...");
     const tStep = performance.now();
 
     writeGpu(gpuDevice!, gpuTimestep, Float32Array.from([schedule.timesteps[step]]));
@@ -251,6 +247,7 @@ async function runMonolithicTransformerLoop(
     cb.stats(
       `step ${stepDisplay}/${numSteps} | ${formatMs(avgMs)} avg/step | ~${formatEta(etaSec)} left`,
     );
+    cb.stepProgress(stepDisplay, numSteps, etaSec);
     log(`  [zimage] step ${stepDisplay} (${stepMs.toFixed(0)} ms)`);
     cb.advance();
     cb.checkAborted();
@@ -357,7 +354,6 @@ async function runShardedTransformerLoop(
     set.hiddenDim,
   ]);
 
-  cb.advance();
   cb.checkAborted();
 
   // Load a shard's external data file into a fresh Uint8Array. Used by the
@@ -487,6 +483,8 @@ async function runShardedTransformerLoop(
   const totalWeightPerStep = shardWeights.reduce((sum, weight) => sum + weight, 0);
   let rateStartMs = 0; // set at end of shard 0 / step 0
   let bytesSinceRateStart = 0;
+  let stepTimeSum = 0;
+  let stepTimeCount = 0;
   const tLoop = performance.now();
 
   try {
@@ -513,7 +511,7 @@ async function runShardedTransformerLoop(
       };
 
       for (let si = 0; si < nShards; si++) {
-        cb.status(`step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards}...`);
+        cb.status("denoising...");
         const flatIdx = step * nShards + si;
         const tShard = performance.now();
 
@@ -617,17 +615,23 @@ async function runShardedTransformerLoop(
         const remainingFutureStepsWeight = (numSteps - stepDisplay) * totalWeightPerStep;
         const remainingWeight = remainingThisStepWeight + remainingFutureStepsWeight;
         let etaLabel: string;
+        let etaSec = -1;
         if (bytesSinceRateStart > 0) {
           const msPerByte = (performance.now() - rateStartMs) / bytesSinceRateStart;
-          const etaSec = (msPerByte * remainingWeight) / 1000;
+          etaSec = (msPerByte * remainingWeight) / 1000;
           etaLabel = `~${formatEta(etaSec)} left`;
         } else {
           etaLabel = "estimating...";
         }
+        const completedWeight =
+          step * totalWeightPerStep + shardWeights.slice(0, si + 1).reduce((sum, w) => sum + w, 0);
+        const totalWeight = numSteps * totalWeightPerStep;
+        cb.stepProgress(completedWeight, totalWeight, etaSec);
         cb.stats(`step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${etaLabel}`);
         log(
           `  [zimage-sharded] step ${stepDisplay} shard ${si}: dataWait ${dataWaitMs.toFixed(0)}ms, create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms (total ${shardMs.toFixed(0)}ms)`,
         );
+        cb.checkAborted();
       }
 
       // Final shard output: unified_results -> noise_pred for scheduler
@@ -653,6 +657,10 @@ async function runShardedTransformerLoop(
       nextLatents.dispose();
 
       const stepMs = performance.now() - tStep;
+      stepTimeSum += stepMs;
+      stepTimeCount++;
+      const stepEtaSec = ((stepTimeSum / stepTimeCount) * (numSteps - stepDisplay)) / 1000;
+      cb.stepProgress(stepDisplay, numSteps, stepEtaSec);
       log(`  [zimage-sharded] step ${stepDisplay} total (${stepMs.toFixed(0)} ms)`);
       cb.advance();
       cb.checkAborted();
@@ -697,7 +705,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   log(
     `[zimage] tokenized: ${sequenceLength} tokens (${usedTemplate ? "chat template" : "manual fallback"})`,
   );
-  cb.advance();
   cb.checkAborted();
 
   // ----- 2. Text encoder (load, run, release) -----
@@ -757,7 +764,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   cb.status("releasing text encoder...");
   await teSess.release();
   log("[zimage] text encoder released");
-  cb.advance();
   cb.checkAborted();
 
   // ----- 3. Transformer + scheduler step (N-step DiT loop) -----
@@ -798,7 +804,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const vaePreSess = await createZImageSession(cache, set.vaePreProcess, defaultProviders());
   const vaeSess = await createZImageSession(cache, set.vaeDecoder, defaultProviders());
   log(`[zimage] VAE loaded in ${(performance.now() - tVaeLoad).toFixed(1)} ms`);
-  cb.advance();
   cb.checkAborted();
 
   cb.status("decoding latent...");

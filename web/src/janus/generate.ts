@@ -88,6 +88,7 @@ class JanusProgressStreamer extends BaseStreamer {
       this.cb.stats(
         `${this.tokensSoFar} / ${this.numImageTokens} tokens - avg ${avgMs.toFixed(0)} ms/token - ETA ${(etaMs / 1000).toFixed(0)}s`,
       );
+      this.cb.stepProgress(this.tokensSoFar, this.numImageTokens, etaMs / 1000);
     }
     // Throwing inside a streamer would be swallowed by transformers.js, so
     // cancellation is handled by the StoppingCriteria below instead.
@@ -229,7 +230,7 @@ export const janusGenerateFn: GenerateFn = {
     // post-processing). The cold-start unit is also counted on warm runs
     // because the UI prefers a stable totalUnits over a more accurate but
     // model-state-dependent number.
-    return { totalUnits: input.set.numImageTokens + 2 };
+    return { totalUnits: input.set.numImageTokens };
   },
 
   async run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageData> {
@@ -254,7 +255,6 @@ export const janusGenerateFn: GenerateFn = {
     cb.checkAborted();
 
     const { processor, model } = await loadOnce(set.hfModelId, cb);
-    cb.advance(); // model-load phase
     cb.checkAborted();
 
     cb.status("preparing inputs...");
@@ -396,7 +396,6 @@ export const janusGenerateFn: GenerateFn = {
     // Even if the streamer fired the full count, double-check the cancel
     // flag in case the cancel landed during image_decode.
     cb.checkAborted();
-    cb.advance(); // post-process phase
 
     if (outputs.length === 0) {
       throw new Error("Janus generate_images returned no images");

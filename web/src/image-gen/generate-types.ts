@@ -47,6 +47,10 @@ export interface GenerateCallbacks {
   status: (msg: string) => void;
   /** Per-step stats line for the UI's stats line (avg time, ETA, etc.). */
   stats: (msg: string) => void;
+  /** Structured denoise step progress. Fired once per step with the
+   *  current step (1-based), total steps, and estimated seconds remaining
+   *  (-1 if not yet available). */
+  stepProgress: (current: number, total: number, etaSeconds: number) => void;
   /** A discrete progress unit completed. The UI advances its progress bar
    *  by 1 / totalUnits. */
   advance: () => void;
