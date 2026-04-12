@@ -21,6 +21,7 @@ import { sdxlGenerateFn } from "../sdxl/generate";
 // (our `onnxruntime-web` dep) and only loads transformers.js when a Janus
 // model is actually selected and the user clicks generate.
 import type { GenerateCallbacks, GenerateFn, GenerateInput, RefImageInput } from "./generate-types";
+import { formatEta } from "./generate-utils";
 import { ImageGenModelManager } from "./model-manager";
 import {
   PersistedSettings as PersistedSettingsStore,
@@ -520,6 +521,8 @@ generateBtn.addEventListener("click", async () => {
   resultSection.style.display = "none";
   resultDownloads.innerHTML = "";
 
+  const genStartMs = performance.now();
+
   const cb: GenerateCallbacks = {
     log,
     status: (msg) => {
@@ -571,7 +574,8 @@ generateBtn.addEventListener("click", async () => {
     makeDownloadLink("download JPG", "image-gen.jpg", "image/jpeg", 0.92);
 
     resultSection.style.display = "";
-    statusLine.textContent = "done";
+    const elapsedSec = (performance.now() - genStartMs) / 1000;
+    statusLine.textContent = `done in ${formatEta(elapsedSec)}`;
   } catch (err) {
     if (err instanceof CancelledError) {
       statusLine.textContent = "cancelled";

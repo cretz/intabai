@@ -10,6 +10,13 @@ import {
   formatBytes,
 } from "./models";
 
+/** Wrap a display name in <strong>, optionally as an external link when the
+ *  model has a known source page. Links open in a new tab. */
+function linkedStrong(name: string, href: string | undefined): string {
+  if (!href) return `<strong>${name}</strong>`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer"><strong>${name}</strong></a>`;
+}
+
 export class ModelManager {
   private cache: ModelCache;
   private readySets = new Set<string>();
@@ -84,14 +91,15 @@ export class ModelManager {
   private fillSetDiv(div: HTMLElement, set: ModelSet, cached: boolean): void {
     const totalSize = formatBytes(set.primary.sizeBytes + depsSize(set));
     div.title = set.description;
+    const linkedName = linkedStrong(set.name, set.primary.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `<strong>${set.name}</strong> <small>(cached)</small> ` +
+        `${linkedName} <small>(cached)</small> ` +
         `<button class="delete-btn">delete</button>`;
       div.querySelector(".delete-btn")!.addEventListener("click", () => this.onDeleteSet(set, div));
     } else {
       div.innerHTML =
-        `<strong>${set.name}</strong> <small>(${totalSize})</small> ` +
+        `${linkedName} <small>(${totalSize})</small> ` +
         `<button class="download-btn">download</button>` +
         `<small class="progress-text"></small>`;
       div
@@ -151,16 +159,17 @@ export class ModelManager {
 
   private fillEnhancerDiv(div: HTMLElement, enhancer: ModelFile, cached: boolean): void {
     div.title = "optional face enhancement";
+    const linkedName = linkedStrong(enhancer.name, enhancer.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `<strong>${enhancer.name}</strong> <small>(cached)</small> ` +
+        `${linkedName} <small>(cached)</small> ` +
         `<button class="delete-btn">delete</button>`;
       div
         .querySelector(".delete-btn")!
         .addEventListener("click", () => this.onDeleteEnhancer(enhancer, div));
     } else {
       div.innerHTML =
-        `<strong>${enhancer.name}</strong> <small>(${formatBytes(enhancer.sizeBytes)})</small> ` +
+        `${linkedName} <small>(${formatBytes(enhancer.sizeBytes)})</small> ` +
         `<button class="download-btn">download</button>` +
         `<small class="progress-text"></small>`;
       div

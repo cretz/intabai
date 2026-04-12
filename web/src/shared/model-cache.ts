@@ -17,6 +17,12 @@ export interface ModelFile {
   /** Approximate size for download progress UI. Not used for verification. */
   sizeBytes: number;
   /**
+   * Optional public source page (typically a Hugging Face repo) shown from
+   * the model list UI so users can click through to see what they're
+   * downloading. Not used by the cache itself.
+   */
+  hfRepoUrl?: string;
+  /**
    * Optional transform applied to the bytes as they stream in from the
    * network, before being written to OPFS. Lets a tool (e.g. face-swap) patch
    * an ONNX file on the way down without the cache needing to know what a

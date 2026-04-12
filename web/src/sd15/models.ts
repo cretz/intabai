@@ -81,12 +81,25 @@ export interface ModelDefaults {
   fixedSteps?: boolean;
 }
 
+/** Optional metadata for progress estimation. Pipelines can interpret the
+ *  repeated-unit weights according to their own execution plan: shard
+ *  sequence, VAE tiles, autoregressive decode chunks, etc. */
+export interface ModelProgressInfo {
+  /** Relative weights for repeated work items. File size in bytes is a
+   *  reasonable first proxy when exact runtime modeling is not available. */
+  repeatedUnitWeightBytes?: number[];
+}
+
 interface BaseModelInfo {
   id: string;
   name: string;
   description: string;
   capabilities: ModelCapabilities;
   defaults: ModelDefaults;
+  /** Public model/source page to open from the UI when available. */
+  hfRepoUrl?: string;
+  /** Optional progress-estimation hints for the pipeline. */
+  progress?: ModelProgressInfo;
   /** Reference-image help text. Required when capabilities.img2img is true. */
   img2img?: Img2ImgHelp;
 }
@@ -270,6 +283,7 @@ export const SD15_BASE_MODEL: Sd15ModelSet = {
     "Original SD1.5 weights, ONNX fp16, external-data UNet. Supports " +
     "text-to-image and image-to-image. ~2.13 GB total download.",
   family: "sd15",
+  hfRepoUrl: "https://huggingface.co/nmkd/stable-diffusion-1.5-onnx-fp16",
   capabilities: { txt2img: true, img2img: true },
   defaults: {
     width: 512,
@@ -422,6 +436,7 @@ export const SEGMIND_VEGA_MODEL: SdxlModelSet = {
     "with sharper details and better prompt adherence, at the cost of a much " +
     "larger ~3.22 GB download. Supports text-to-image and image-to-image.",
   family: "sdxl",
+  hfRepoUrl: "https://huggingface.co/segmind/Segmind-VegaRT",
   capabilities: { txt2img: true, img2img: true },
   defaults: {
     // SDXL native resolution is 1024x1024 but the WebGPU memory budget on
@@ -543,6 +558,7 @@ export const SDXL_TURBO_MODEL: SdxlModelSet = {
     "classifier-free guidance needed. ~2.67 GB total download. UNet is split " +
     "into graph + external-data sidecar during download for mobile compatibility.",
   family: "sdxl",
+  hfRepoUrl: "https://huggingface.co/webnn/sdxl-turbo",
   capabilities: { txt2img: true, img2img: true },
   boundaryDtype: "float16",
   schedulerType: "euler",
@@ -666,6 +682,7 @@ export const ZIMAGE_TURBO_MODEL: ZImageModelSet = {
     "but slow (~286s on iGPU, much faster on discrete GPU). ~6.02 GB " +
     "total download. Desktop only.",
   family: "zimage",
+  hfRepoUrl: "https://huggingface.co/webnn/Z-Image-Turbo",
   capabilities: { txt2img: true, img2img: false },
   numInferenceSteps: 9,
   hiddenDim: 2560,
@@ -698,107 +715,51 @@ export const ZIMAGE_TURBO_MODEL: ZImageModelSet = {
   vaePreProcess: ZIMAGE_VAE_PRE,
 };
 
-// =============================================================================
-// Z-Image-Turbo (reordered) - dev/test variant with node-reordered transformer
-// for sharding. Uses local dev server for transformer, HF for everything else.
-// =============================================================================
+// Sharded Z-Image repo. Keeps the reordered monolithic transformer plus the
+// boundary-aware shard set under the same `onnx/` layout for browser use.
+const ZIMAGE_SHARDED_REPO = `${HF}/cretz/Z-Image-Turbo-ONNX-sharded/resolve/main`;
 
-// TODO: switch to HF URL once published: `${HF}/cretz/Z-Image-Turbo/resolve/main`
-const ZIMAGE_REORDERED_REPO = "/local-models";
-
-const ZIMAGE_REORDERED_TOK_VOCAB: ModelFile = {
-  id: "zimage_reordered_tokenizer_vocab",
+const ZIMAGE_SHARDED_TOK_VOCAB: ModelFile = {
+  id: "zimage_local_tokenizer_vocab",
   name: "Z-Image tokenizer.json",
-  url: `${ZIMAGE_REORDERED_REPO}/tokenizer/tokenizer.json`,
+  url: `${ZIMAGE_SHARDED_REPO}/tokenizer/tokenizer.json`,
   sizeBytes: 7_335_749,
 };
-const ZIMAGE_REORDERED_TOK_CONFIG: ModelFile = {
-  id: "zimage_reordered_tokenizer_config",
+const ZIMAGE_SHARDED_TOK_CONFIG: ModelFile = {
+  id: "zimage_local_tokenizer_config",
   name: "Z-Image tokenizer_config.json",
-  url: `${ZIMAGE_REORDERED_REPO}/tokenizer/tokenizer_config.json`,
+  url: `${ZIMAGE_SHARDED_REPO}/tokenizer/tokenizer_config.json`,
   sizeBytes: 5_404,
 };
-const ZIMAGE_REORDERED_TE_GRAPH: ModelFile = {
-  id: "zimage_reordered_text_encoder_graph",
+const ZIMAGE_SHARDED_TE_GRAPH: ModelFile = {
+  id: "zimage_local_text_encoder_graph",
   name: "Z-Image text encoder (q4f16, graph)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/text_encoder_model_q4f16.onnx`,
+  url: `${ZIMAGE_SHARDED_REPO}/onnx/text_encoder_model_q4f16.onnx`,
   sizeBytes: 690_765_724,
 };
-const ZIMAGE_REORDERED_TE_DATA: ModelFile = {
-  id: "zimage_reordered_text_encoder_data",
+const ZIMAGE_SHARDED_TE_DATA: ModelFile = {
+  id: "zimage_local_text_encoder_data",
   name: "Z-Image text encoder (q4f16, weights)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/text_encoder_model_q4f16.onnx_data`,
+  url: `${ZIMAGE_SHARDED_REPO}/onnx/text_encoder_model_q4f16.onnx_data`,
   sizeBytes: 1_526_231_040,
 };
-const ZIMAGE_REORDERED_XFMR_GRAPH: ModelFile = {
-  id: "zimage_reordered_transformer_graph",
-  name: "Z-Image transformer reordered (q4f16, graph)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/transformer_model_q4f16.onnx`,
-  sizeBytes: 1_675_741_721,
-};
-const ZIMAGE_REORDERED_XFMR_DATA: ModelFile = {
-  id: "zimage_reordered_transformer_data",
-  name: "Z-Image transformer reordered (q4f16, weights)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/transformer_model_q4f16.onnx_data`,
-  sizeBytes: 2_025_062_400,
-};
-const ZIMAGE_REORDERED_VAE_DEC: ModelFile = {
-  id: "zimage_reordered_vae_decoder",
+const ZIMAGE_SHARDED_VAE_DEC: ModelFile = {
+  id: "zimage_local_vae_decoder",
   name: "Z-Image VAE decoder (f16)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/vae_decoder_model_f16.onnx`,
+  url: `${ZIMAGE_SHARDED_REPO}/onnx/vae_decoder_model_f16.onnx`,
   sizeBytes: 99_284_482,
 };
-const ZIMAGE_REORDERED_SCHEDULER_STEP: ModelFile = {
-  id: "zimage_reordered_scheduler_step",
+const ZIMAGE_SHARDED_SCHEDULER_STEP: ModelFile = {
+  id: "zimage_local_scheduler_step",
   name: "Z-Image scheduler step (f16)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/scheduler_step_model_f16.onnx`,
+  url: `${ZIMAGE_SHARDED_REPO}/onnx/scheduler_step_model_f16.onnx`,
   sizeBytes: 3_235,
 };
-const ZIMAGE_REORDERED_VAE_PRE: ModelFile = {
-  id: "zimage_reordered_vae_pre_process",
+const ZIMAGE_SHARDED_VAE_PRE: ModelFile = {
+  id: "zimage_local_vae_pre_process",
   name: "Z-Image VAE pre-process (f16)",
-  url: `${ZIMAGE_REORDERED_REPO}/onnx/vae_pre_process_model_f16.onnx`,
+  url: `${ZIMAGE_SHARDED_REPO}/onnx/vae_pre_process_model_f16.onnx`,
   sizeBytes: 905,
-};
-
-export const ZIMAGE_TURBO_REORDERED_MODEL: ZImageModelSet = {
-  id: "zimage_turbo_reordered",
-  name: "Z-Image-Turbo Reordered (dev)",
-  description:
-    "Dev/test: Z-Image-Turbo with node-reordered transformer graph. " +
-    "Same weights and behavior as the original, but with contiguous " +
-    "layer nodes for sharding. Served from local dev server.",
-  family: "zimage",
-  capabilities: { txt2img: true, img2img: false },
-  numInferenceSteps: 9,
-  hiddenDim: 2560,
-  defaults: {
-    width: 512,
-    height: 512,
-    mobileResolution: 512,
-    maxResolution: 768,
-    steps: 9,
-    cfg: 0,
-    resolutionHelp: "Z-Image supports 512x512 and 768x768.",
-    stepsHelp: "DiT inference steps. 9 is the default. 3-9 range.",
-    cfgHelp: "Z-Image-Turbo does not use classifier-free guidance.",
-    fixedResolution: false,
-    fixedSteps: false,
-  },
-  tokenizer: { config: ZIMAGE_REORDERED_TOK_CONFIG, vocab: ZIMAGE_REORDERED_TOK_VOCAB },
-  textEncoder: {
-    graph: ZIMAGE_REORDERED_TE_GRAPH,
-    data: ZIMAGE_REORDERED_TE_DATA,
-    dataPath: "text_encoder_model_q4f16.onnx_data",
-  },
-  transformer: {
-    graph: ZIMAGE_REORDERED_XFMR_GRAPH,
-    data: ZIMAGE_REORDERED_XFMR_DATA,
-    dataPath: "transformer_model_q4f16.onnx_data",
-  },
-  vaeDecoder: ZIMAGE_REORDERED_VAE_DEC,
-  schedulerStep: ZIMAGE_REORDERED_SCHEDULER_STEP,
-  vaePreProcess: ZIMAGE_REORDERED_VAE_PRE,
 };
 
 // =============================================================================
@@ -815,55 +776,67 @@ export const ZIMAGE_TURBO_REORDERED_MODEL: ZImageModelSet = {
 // external_data strings changed the graph bytes from the earlier shared-data
 // version.
 const ZIMAGE_SHARD_GRAPHS: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_600b_s0", name: "Z-Image transformer shard 0", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard0.onnx`, sizeBytes: 83_489_820 },
-  { id: "zimage_sharded_xfmr_600b_s1", name: "Z-Image transformer shard 1", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard1.onnx`, sizeBytes: 550_323_668 },
-  { id: "zimage_sharded_xfmr_600b_s2", name: "Z-Image transformer shard 2", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard2.onnx`, sizeBytes: 377_565_157 },
-  { id: "zimage_sharded_xfmr_600b_s3", name: "Z-Image transformer shard 3", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard3.onnx`, sizeBytes: 377_566_074 },
-  { id: "zimage_sharded_xfmr_600b_s4", name: "Z-Image transformer shard 4", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard4.onnx`, sizeBytes: 286_583_178 },
-  { id: "zimage_sharded_xfmr_600b_s5", name: "Z-Image transformer shard 5", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard5.onnx`, sizeBytes: 156_321 },
+  { id: "zimage_sharded_xfmr_600b_s0", name: "Z-Image transformer shard 0", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx`, sizeBytes: 83_489_820 },
+  { id: "zimage_sharded_xfmr_600b_s1", name: "Z-Image transformer shard 1", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx`, sizeBytes: 550_323_668 },
+  { id: "zimage_sharded_xfmr_600b_s2", name: "Z-Image transformer shard 2", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx`, sizeBytes: 377_565_157 },
+  { id: "zimage_sharded_xfmr_600b_s3", name: "Z-Image transformer shard 3", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx`, sizeBytes: 377_566_074 },
+  { id: "zimage_sharded_xfmr_600b_s4", name: "Z-Image transformer shard 4", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx`, sizeBytes: 286_583_178 },
+  { id: "zimage_sharded_xfmr_600b_s5", name: "Z-Image transformer shard 5", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx`, sizeBytes: 156_321 },
 ];
 
 // Per-shard external data files. Each holds only the initializer bytes that
 // the matching shard graph consumes (~56-225 MB each). This replaces the
-// old shared 2 GB ZIMAGE_REORDERED_XFMR_DATA reference for sharded sessions.
+// old shared 2 GB monolithic transformer data reference for sharded sessions.
 const ZIMAGE_SHARD_DATA_FILES: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_600b_d0", name: "Z-Image transformer shard 0 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard0.onnx_data`, sizeBytes: 137_625_600 },
-  { id: "zimage_sharded_xfmr_600b_d1", name: "Z-Image transformer shard 1 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard1.onnx_data`, sizeBytes: 412_876_800 },
-  { id: "zimage_sharded_xfmr_600b_d2", name: "Z-Image transformer shard 2 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard2.onnx_data`, sizeBytes: 530_841_600 },
-  { id: "zimage_sharded_xfmr_600b_d3", name: "Z-Image transformer shard 3 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard3.onnx_data`, sizeBytes: 530_841_600 },
-  { id: "zimage_sharded_xfmr_600b_d4", name: "Z-Image transformer shard 4 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard4.onnx_data`, sizeBytes: 412_876_800 },
-  { id: "zimage_sharded_xfmr_600b_d5", name: "Z-Image transformer shard 5 data", url: `${ZIMAGE_REORDERED_REPO}/onnx-600-boundary/transformer_model_q4f16_shard5.onnx_data`, sizeBytes: 0 },
+  { id: "zimage_sharded_xfmr_600b_d0", name: "Z-Image transformer shard 0 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx_data`, sizeBytes: 137_625_600 },
+  { id: "zimage_sharded_xfmr_600b_d1", name: "Z-Image transformer shard 1 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx_data`, sizeBytes: 412_876_800 },
+  { id: "zimage_sharded_xfmr_600b_d2", name: "Z-Image transformer shard 2 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx_data`, sizeBytes: 530_841_600 },
+  { id: "zimage_sharded_xfmr_600b_d3", name: "Z-Image transformer shard 3 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx_data`, sizeBytes: 530_841_600 },
+  { id: "zimage_sharded_xfmr_600b_d4", name: "Z-Image transformer shard 4 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx_data`, sizeBytes: 412_876_800 },
+  { id: "zimage_sharded_xfmr_600b_d5", name: "Z-Image transformer shard 5 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx_data`, sizeBytes: 0 },
 ];
 
 export const ZIMAGE_TURBO_SHARDED_MODEL: ZImageShardedModelSet = {
   id: "zimage_turbo_sharded",
-  name: "Z-Image-Turbo Sharded (dev)",
+  name: "Z-Image-Turbo (sharded)",
   description:
-    "Dev/test: Z-Image-Turbo with a boundary-aware 6-shard transformer " +
-    "experiment. The sharder now prefers cleaner block-end cuts over raw " +
-    "byte-greedy ones, producing a very small lead shard, one larger " +
-    "catch-up shard, and mostly single-output later shards.",
+    "Z-Image-Turbo with a boundary-aware 6-shard transformer layout. " +
+    "This is the intended browser-friendly Z-Image path: same quality " +
+    "goal as the full model, but split to survive tighter mobile GPU " +
+    "budgets. 384x384 is the recommended mobile default; 512x512 and " +
+    "768x768 are better fits for desktop-class GPUs.",
   family: "zimage",
+  hfRepoUrl: "https://huggingface.co/cretz/Z-Image-Turbo-ONNX-sharded",
+  progress: {
+    repeatedUnitWeightBytes: [
+      83_489_820 + 137_625_600,
+      550_323_668 + 412_876_800,
+      377_565_157 + 530_841_600,
+      377_566_074 + 530_841_600,
+      286_583_178 + 412_876_800,
+      156_321 + 0,
+    ],
+  },
   capabilities: { txt2img: true, img2img: false },
   numInferenceSteps: 9,
   hiddenDim: 2560,
   defaults: {
     width: 512,
     height: 512,
-    mobileResolution: 512,
+    mobileResolution: 384,
     maxResolution: 768,
-    steps: 9,
+    steps: 3,
     cfg: 0,
-    resolutionHelp: "Z-Image supports 512x512 and 768x768.",
-    stepsHelp: "DiT inference steps. 9 is the default. 3-9 range.",
+    resolutionHelp: "384x384 is the mobile default to keep memory and run time in check. 512x512 and 768x768 are better desktop targets.",
+    stepsHelp: "3 is the mobile speed default so phones can finish a run in a reasonable time. Increase to 4-6 for better quality if you can tolerate the wait; 9 remains the desktop quality default.",
     cfgHelp: "Z-Image-Turbo does not use classifier-free guidance.",
     fixedResolution: false,
     fixedSteps: false,
   },
-  tokenizer: { config: ZIMAGE_REORDERED_TOK_CONFIG, vocab: ZIMAGE_REORDERED_TOK_VOCAB },
+  tokenizer: { config: ZIMAGE_SHARDED_TOK_CONFIG, vocab: ZIMAGE_SHARDED_TOK_VOCAB },
   textEncoder: {
-    graph: ZIMAGE_REORDERED_TE_GRAPH,
-    data: ZIMAGE_REORDERED_TE_DATA,
+    graph: ZIMAGE_SHARDED_TE_GRAPH,
+    data: ZIMAGE_SHARDED_TE_DATA,
     dataPath: "text_encoder_model_q4f16.onnx_data",
   },
   transformerShards: ZIMAGE_SHARD_GRAPHS.map((graph, i) => ({
@@ -871,9 +844,9 @@ export const ZIMAGE_TURBO_SHARDED_MODEL: ZImageShardedModelSet = {
     data: ZIMAGE_SHARD_DATA_FILES[i],
     dataPath: `transformer_model_q4f16_shard${i}.onnx_data`,
   })),
-  vaeDecoder: ZIMAGE_REORDERED_VAE_DEC,
-  schedulerStep: ZIMAGE_REORDERED_SCHEDULER_STEP,
-  vaePreProcess: ZIMAGE_REORDERED_VAE_PRE,
+  vaeDecoder: ZIMAGE_SHARDED_VAE_DEC,
+  schedulerStep: ZIMAGE_SHARDED_SCHEDULER_STEP,
+  vaePreProcess: ZIMAGE_SHARDED_VAE_PRE,
 };
 
 // =============================================================================
@@ -899,6 +872,7 @@ export const JANUS_PRO_1B_MODEL: JanusModelSet = {
     "below SD1.5); the appeal is the small bundle and the radically " +
     "different architecture. No reference-image / img2img support.",
   family: "janus",
+  hfRepoUrl: "https://huggingface.co/onnx-community/Janus-Pro-1B-ONNX",
   hfModelId: JANUS_PRO_1B_MODEL_ID,
   dtype: "q4f16",
   nativeResolution: JANUS_NATIVE_RESOLUTION,
@@ -931,13 +905,12 @@ export const JANUS_PRO_1B_MODEL: JanusModelSet = {
 /** All model sets the image-gen tool offers. Order = display order,
  *  recommended first by quality/speed/compatibility balance. */
 export const IMAGE_GEN_MODELS: ModelSet[] = [
-  JANUS_PRO_1B_MODEL,
-  SDXL_TURBO_MODEL,
   ZIMAGE_TURBO_MODEL,
-  ZIMAGE_TURBO_REORDERED_MODEL,
   ZIMAGE_TURBO_SHARDED_MODEL,
-  SEGMIND_VEGA_MODEL,
+  SDXL_TURBO_MODEL,
   SD15_BASE_MODEL,
+  SEGMIND_VEGA_MODEL,
+  JANUS_PRO_1B_MODEL,
 ];
 
 /** Flatten a ModelSet to the list of files that must be cached. */

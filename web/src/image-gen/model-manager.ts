@@ -12,11 +12,32 @@
 import { ModelCache, type DownloadProgress } from "../shared/model-cache";
 import { IMAGE_GEN_MODELS, modelSetFiles, type ModelSet } from "../sd15/models";
 
+type ModelSection = "recommended" | "lower-quality";
+
 function formatBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
   if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
   return `${bytes} B`;
+}
+
+function modelSection(set: ModelSet): ModelSection {
+  return set.id === "zimage_turbo" || set.id === "zimage_turbo_sharded"
+    ? "recommended"
+    : "lower-quality";
+}
+
+function cacheListLabel(set: ModelSet): string {
+  const linkedName = set.hfRepoUrl
+    ? `<a href="${set.hfRepoUrl}" target="_blank" rel="noopener noreferrer"><strong>${set.name}</strong></a>`
+    : `<strong>${set.name}</strong>`;
+  if (set.id === "zimage_turbo") {
+    return `${linkedName} <small>recommended for desktop</small>`;
+  }
+  if (set.id === "zimage_turbo_sharded") {
+    return `${linkedName} <small>recommended for mobile</small>`;
+  }
+  return linkedName;
 }
 
 function totalSetBytes(set: ModelSet): number {
@@ -73,13 +94,28 @@ export class ImageGenModelManager {
     this.readySets.clear();
 
     const header = document.createElement("small");
-    header.textContent = "ordered by recommended:";
+    header.textContent = "recommended models first. all downloads stay in this browser.";
     header.style.display = "block";
-    header.style.marginBottom = "4px";
+    header.style.marginBottom = "8px";
     this.container.appendChild(header);
 
+    const recommendedSection = this.createSection(
+      "recommended",
+      "best current options: full Z-Image for desktop, sharded Z-Image for mobile.",
+    );
+    const lowerQualitySection = this.createSection(
+      "lower quality / fallback",
+      "older, smaller, or weaker models that are still available if you want them.",
+    );
+    this.container.appendChild(recommendedSection);
+    this.container.appendChild(lowerQualitySection);
+
     for (const set of IMAGE_GEN_MODELS) {
-      await this.renderSet(set);
+      const parent =
+        modelSection(set) === "recommended"
+          ? recommendedSection
+          : lowerQualitySection;
+      await this.renderSet(set, parent);
     }
 
     const clearWrap = document.createElement("div");
@@ -110,7 +146,30 @@ export class ImageGenModelManager {
     this.onReadyChange();
   }
 
-  private async renderSet(set: ModelSet): Promise<void> {
+  private createSection(title: string, description: string): HTMLDivElement {
+    const wrap = document.createElement("div");
+    wrap.style.margin = "10px 0";
+    wrap.style.padding = "6px 8px";
+    wrap.style.border = "1px solid";
+
+    const heading = document.createElement("div");
+    heading.style.fontSize = "12px";
+    heading.style.fontWeight = "bold";
+    heading.style.letterSpacing = "0.06em";
+    heading.style.marginBottom = "2px";
+    heading.textContent = title.toUpperCase();
+    wrap.appendChild(heading);
+
+    const help = document.createElement("small");
+    help.textContent = description;
+    help.style.display = "block";
+    help.style.marginBottom = "6px";
+    wrap.appendChild(help);
+
+    return wrap;
+  }
+
+  private async renderSet(set: ModelSet, parent: HTMLElement): Promise<void> {
     const files = modelSetFiles(set);
     const cached = await this.cache.areAllCached(files);
     if (cached) this.readySets.add(set.id);
@@ -118,11 +177,12 @@ export class ImageGenModelManager {
     const div = document.createElement("div");
     div.id = `model-set-${set.id}`;
     this.fillSetDiv(div, set, cached);
-    this.container.appendChild(div);
+    parent.appendChild(div);
   }
 
   private fillSetDiv(div: HTMLElement, set: ModelSet, cached: boolean): void {
     const totalSize = formatBytes(totalSetBytes(set));
+    const label = cacheListLabel(set);
     div.title = set.description;
     div.style.display = "flex";
     div.style.alignItems = "baseline";
@@ -130,14 +190,14 @@ export class ImageGenModelManager {
     div.style.padding = "2px 0";
     if (cached) {
       div.innerHTML =
-        `<span style="flex:1"><strong>${set.name}</strong></span>` +
+        `<span style="flex:1">${label}</span>` +
         `<small>${totalSize}</small>` +
         `<small style="color:green">cached</small> ` +
         `<button class="delete-btn">delete</button>`;
       div.querySelector(".delete-btn")!.addEventListener("click", () => this.onDeleteSet(set, div));
     } else {
       div.innerHTML =
-        `<span style="flex:1"><strong>${set.name}</strong></span>` +
+        `<span style="flex:1">${label}</span>` +
         `<small>${totalSize}</small>` +
         `<button class="download-btn">download</button>` +
         `<small class="progress-text"></small>`;

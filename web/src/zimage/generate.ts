@@ -433,12 +433,21 @@ async function runShardedTransformerLoop(
     }
   };
 
-  // Averaging is done per-SHARD rather than per-step so the ETA updates
-  // at shard granularity and is responsive to per-shard variance (the
-  // first shard of each step is usually slower because it includes the
-  // leading hidden_states transfer, etc.).
-  let shardTimeSum = 0;
-  let shardTimeCount = 0;
+  // ETA is derived from rate = wall-clock / bytes processed, with the first
+  // shard of the first step excluded from the baseline. Rationale: shard 0 is
+  // small on Z-Image-Turbo-sharded (~221 MB vs ~900 MB for the middle shards)
+  // and pays the full first-time session-create overhead, so its ms/byte is
+  // not representative of steady-state throughput. Including it pins the ETA
+  // to a distorted rate until enough big shards have completed to wash it
+  // out. Instead we start the rate clock when shard 0 finishes and measure
+  // everything after that as "time-over-size" from a clean baseline.
+  const shardWeights =
+    set.progress?.repeatedUnitWeightBytes?.length === nShards
+      ? set.progress.repeatedUnitWeightBytes
+      : shards.map((shard) => shard.graph.sizeBytes + shard.data.sizeBytes);
+  const totalWeightPerStep = shardWeights.reduce((sum, weight) => sum + weight, 0);
+  let rateStartMs = 0;  // set at end of shard 0 / step 0
+  let bytesSinceRateStart = 0;
   const tLoop = performance.now();
 
   try {
@@ -548,13 +557,29 @@ async function runShardedTransformerLoop(
         const releaseMs = performance.now() - tRelease;
 
         const shardMs = performance.now() - tShard;
-        shardTimeSum += shardMs;
-        shardTimeCount++;
-        const avgShardMs = shardTimeSum / shardTimeCount;
-        const shardsRemaining = totalFlat - flatIdx - 1;
-        const etaSec = (avgShardMs * shardsRemaining) / 1000;
+        const flatIdxJustCompleted = step * nShards + si;
+        if (flatIdxJustCompleted === 0) {
+          // End of shard 0: start the rate clock here. The small-shard +
+          // session-create overhead of shard 0 is intentionally NOT folded
+          // into the rate measurement.
+          rateStartMs = performance.now();
+        } else {
+          bytesSinceRateStart += shardWeights[si];
+        }
+        const remainingThisStepWeight =
+          totalWeightPerStep - shardWeights.slice(0, si + 1).reduce((sum, weight) => sum + weight, 0);
+        const remainingFutureStepsWeight = (numSteps - stepDisplay) * totalWeightPerStep;
+        const remainingWeight = remainingThisStepWeight + remainingFutureStepsWeight;
+        let etaLabel: string;
+        if (bytesSinceRateStart > 0) {
+          const msPerByte = (performance.now() - rateStartMs) / bytesSinceRateStart;
+          const etaSec = (msPerByte * remainingWeight) / 1000;
+          etaLabel = `~${formatEta(etaSec)} left`;
+        } else {
+          etaLabel = "estimating...";
+        }
         cb.stats(
-          `step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${formatMs(avgShardMs)} avg/shard | ~${formatEta(etaSec)} left`,
+          `step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${etaLabel}`,
         );
         log(`  [zimage-sharded] step ${stepDisplay} shard ${si}: dataWait ${dataWaitMs.toFixed(0)}ms, create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms (total ${shardMs.toFixed(0)}ms)`);
       }
