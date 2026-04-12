@@ -1,3 +1,9 @@
+html {
+  /* Dual color-scheme: the browser picks UA defaults for background, text,
+   * form controls, and scrollbars based on the OS preference. A user
+   * override is applied inline on <html> (see src/shared/theme.ts). */
+  color-scheme: light dark;
+}
 body {
   max-width: 700px;
   margin: 0 auto;
@@ -19,4 +25,21 @@ fieldset {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.theme-select {
+  font-size: smaller;
+}
+/* "cached" label: legible on both white and dark backgrounds. */
+.cached-label {
+  color: seagreen;
+}
+@media (prefers-color-scheme: dark) {
+  .cached-label {
+    color: lightgreen;
+  }
 }

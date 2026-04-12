@@ -1,2 +1,5 @@
 node_modules/
 dist/
+.vite/
+__pycache__/
+.venv/

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>video gen - intabai</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // No-flash theme apply: read stored preference before style.css
+      // loads so we never paint the wrong background. See src/shared/theme.ts.
+      (function () {
+        try {
+          var v = localStorage.getItem("intabai:theme");
+          if (v === "light" || v === "dark") {
+            document.documentElement.style.colorScheme = v;
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      .field {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .field label {
+        min-width: 80px;
+      }
+      .field input[type="checkbox"] + label {
+        min-width: 0;
+      }
+      #prompt {
+        width: 100%;
+        min-height: 80px;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+      #frame-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 8px;
+      }
+      #frame-strip canvas,
+      #frame-strip img {
+        max-width: 128px;
+        height: auto;
+      }
+      .ref-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .ref-row img {
+        max-height: 48px;
+        max-width: 48px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <p><a href="/">intabai</a> / video gen</p>
+      <div class="topbar-right">
+        <a href="https://github.com/cretz/intabai/tree/main/web/tools/video-gen">github</a>
+        <select id="theme-select" class="theme-select" aria-label="theme">
+          <option value="auto">auto</option>
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+        </select>
+      </div>
+    </div>
+    <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
+    </div>
+    <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
+    </div>
+    <hr />
+
+    <fieldset>
+      <legend>models (cached in browser)</legend>
+      <details>
+        <summary>show / hide model cache</summary>
+        <small>
+          Models download once into your browser and persist across visits.
+          Nothing leaves your machine.
+        </small>
+        <div id="model-manager"></div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>prompt</legend>
+      <textarea
+        id="prompt"
+        placeholder="a cinematic shot of a jeep driving through the desert at sunset"
+      ></textarea>
+      <div class="field">
+        <input type="checkbox" id="negative-prompt-check" />
+        <label for="negative-prompt-check">use negative prompt</label>
+      </div>
+      <textarea
+        id="negative-prompt"
+        placeholder="blurry, low quality, distorted"
+        style="width: 100%; min-height: 50px; box-sizing: border-box; display: none; font-family: inherit"
+      ></textarea>
+      <details id="reference-frames-section" style="margin-top: 8px">
+        <summary>reference frames (none)</summary>
+        <small>
+          Optional. Empty = pure text-to-video. Add an image at frame 0 for
+          classic image-to-video. Add multiple images at different frame
+          indices to use them as keyframe references.
+        </small>
+        <div class="field" style="margin-top: 6px">
+          <input type="file" id="ref-file" accept="image/*" />
+          <label for="ref-frame-index" style="min-width: 0">at frame</label>
+          <input type="number" id="ref-frame-index" min="0" value="0" style="flex: 0 0 60px; min-width: 0" />
+          <button type="button" id="add-ref-button">add</button>
+        </div>
+        <div id="ref-list"></div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>options</legend>
+      <div class="field">
+        <label for="model-select">model</label>
+        <select id="model-select"></select>
+      </div>
+      <div class="field">
+        <label for="resolution-select">resolution</label>
+        <select id="resolution-select"></select>
+      </div>
+      <div class="field">
+        <label for="num-frames">frames</label>
+        <input type="number" id="num-frames" min="8" max="32" value="16" style="flex: 0 0 80px; min-width: 0" />
+        <small id="frames-hint"></small>
+      </div>
+      <div class="field">
+        <label for="num-steps">steps</label>
+        <input type="number" id="num-steps" min="1" max="8" value="4" style="flex: 0 0 80px; min-width: 0" />
+        <small id="steps-hint"></small>
+      </div>
+      <div class="field">
+        <label for="seed">seed</label>
+        <input type="number" id="seed" placeholder="random" style="flex: 0 0 120px; min-width: 0" />
+      </div>
+      <div class="field">
+        <button type="button" id="reset-options-btn">reset to defaults</button>
+      </div>
+    </fieldset>
+
+    <button id="generate-button" disabled>generate</button>
+
+    <fieldset id="processing" style="display: none">
+      <legend>processing</legend>
+      <progress id="progress" value="0" max="1" style="width: 100%"></progress>
+      <div style="margin-top: 6px"><strong id="status-line"></strong></div>
+      <div id="frame-strip"></div>
+      <div id="error-line" style="margin-top: 6px"></div>
+      <button type="button" id="cancel-button" style="display: none; margin-top: 8px">cancel</button>
+    </fieldset>
+
+    <div id="output"></div>
+
+    <script type="module" src="/src/video-gen/main.ts"></script>
+  </body>
+</html>

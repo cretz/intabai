@@ -94,7 +94,12 @@ export class WorkerHost {
     enhancerId: string | null,
     detectorId: DetectorId,
   ): Promise<void> {
-    await this.call<null>({ type: "loadModels", set, enhancerId, detectorId });
+    await this.call<null>({
+      type: "loadModels",
+      setId: set.id,
+      enhancerId,
+      detectorId,
+    });
   }
 
   async extractEmbedding(image: ImageData): Promise<Float32Array> {

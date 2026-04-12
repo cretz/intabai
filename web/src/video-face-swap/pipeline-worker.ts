@@ -49,6 +49,7 @@
 import { Pipeline } from "./pipeline";
 import { processVideoLoop } from "./process-video-loop";
 import { Mp4BoxFrameProvider } from "./mp4box-frame-provider";
+import { MODEL_SETS } from "./models";
 import {
   type RpcRequest,
   type RpcResponse,
@@ -84,7 +85,9 @@ async function handle(req: RpcRequest): Promise<void> {
       }
       case "loadModels": {
         if (!pipeline) throw new Error("worker not initialized");
-        await pipeline.loadModels(body.set, body.enhancerId, body.detectorId);
+        const set = MODEL_SETS.find((s) => s.id === body.setId);
+        if (!set) throw new Error(`unknown model set: ${body.setId}`);
+        await pipeline.loadModels(set, body.enhancerId, body.detectorId);
         reply(id, null);
         return;
       }

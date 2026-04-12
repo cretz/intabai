@@ -1,4 +1,4 @@
-import { ModelCache, type DownloadProgress } from "./model-cache";
+import { ModelCache, type DownloadProgress } from "../shared/model-cache";
 import {
   ENHANCERS,
   MODEL_SETS,
@@ -10,6 +10,13 @@ import {
   formatBytes,
 } from "./models";
 
+/** Wrap a display name in <strong>, optionally as an external link when the
+ *  model has a known source page. Links open in a new tab. */
+function linkedStrong(name: string, href: string | undefined): string {
+  if (!href) return `<strong>${name}</strong>`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer"><strong>${name}</strong></a>`;
+}
+
 export class ModelManager {
   private cache: ModelCache;
   private readySets = new Set<string>();
@@ -19,7 +26,10 @@ export class ModelManager {
     private container: HTMLDivElement,
     private enhancerSelect: HTMLSelectElement,
   ) {
-    this.cache = new ModelCache();
+    this.cache = new ModelCache({
+      opfsDirName: "intabai-video-face-swap",
+      legacyDirNames: ["intabai-models"],
+    });
   }
 
   async init(): Promise<void> {
@@ -69,7 +79,7 @@ export class ModelManager {
   // --- Swap model sets ---
 
   private async renderSet(set: ModelSet): Promise<void> {
-    const cached = await this.cache.isSetCached(set);
+    const cached = await this.cache.areAllCached(allFiles(set));
     if (cached) this.readySets.add(set.id);
 
     const div = document.createElement("div");
@@ -81,14 +91,14 @@ export class ModelManager {
   private fillSetDiv(div: HTMLElement, set: ModelSet, cached: boolean): void {
     const totalSize = formatBytes(set.primary.sizeBytes + depsSize(set));
     div.title = set.description;
+    const linkedName = linkedStrong(set.name, set.primary.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `<strong>${set.name}</strong> <small>(cached)</small> ` +
-        `<button class="delete-btn">delete</button>`;
+        `${linkedName} <small>(cached)</small> ` + `<button class="delete-btn">delete</button>`;
       div.querySelector(".delete-btn")!.addEventListener("click", () => this.onDeleteSet(set, div));
     } else {
       div.innerHTML =
-        `<strong>${set.name}</strong> <small>(${totalSize})</small> ` +
+        `${linkedName} <small>(${totalSize})</small> ` +
         `<button class="download-btn">download</button>` +
         `<small class="progress-text"></small>`;
       div
@@ -102,10 +112,22 @@ export class ModelManager {
     const progressText = div.querySelector(".progress-text") as HTMLElement;
     btn.disabled = true;
 
+    // Downloads now run in parallel, so per-file events interleave. Track
+    // latest bytesLoaded per fileId and sum for an overall progress bar.
+    const files = allFiles(set);
+    const totalBytes = set.primary.sizeBytes + depsSize(set);
+    const bytesByFile = new Map<string, number>();
+    for (const f of files) {
+      bytesByFile.set(f.id, (await this.cache.isFileCached(f)) ? f.sizeBytes : 0);
+    }
+
     try {
-      await this.cache.downloadSet(set, (p: DownloadProgress) => {
-        const pct = ((p.bytesLoaded / p.bytesTotal) * 100).toFixed(0);
-        progressText.textContent = ` ${p.fileName}: ${pct}% (${p.fileIndex + 1}/${p.fileCount})`;
+      await this.cache.downloadFiles(files, (p: DownloadProgress) => {
+        bytesByFile.set(p.fileId, p.bytesLoaded);
+        let overallBytes = 0;
+        for (const v of bytesByFile.values()) overallBytes += v;
+        const pct = ((overallBytes / totalBytes) * 100).toFixed(0);
+        progressText.textContent = ` ${pct}% (${formatBytes(overallBytes)} / ${formatBytes(totalBytes)})`;
       });
 
       this.readySets.add(set.id);
@@ -117,7 +139,7 @@ export class ModelManager {
   }
 
   private async onDeleteSet(set: ModelSet, div: HTMLElement): Promise<void> {
-    await this.cache.deleteSet(set);
+    await this.cache.deleteFiles(allFiles(set));
     this.readySets.delete(set.id);
     this.fillSetDiv(div, set, false);
   }
@@ -136,16 +158,16 @@ export class ModelManager {
 
   private fillEnhancerDiv(div: HTMLElement, enhancer: ModelFile, cached: boolean): void {
     div.title = "optional face enhancement";
+    const linkedName = linkedStrong(enhancer.name, enhancer.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `<strong>${enhancer.name}</strong> <small>(cached)</small> ` +
-        `<button class="delete-btn">delete</button>`;
+        `${linkedName} <small>(cached)</small> ` + `<button class="delete-btn">delete</button>`;
       div
         .querySelector(".delete-btn")!
         .addEventListener("click", () => this.onDeleteEnhancer(enhancer, div));
     } else {
       div.innerHTML =
-        `<strong>${enhancer.name}</strong> <small>(${formatBytes(enhancer.sizeBytes)})</small> ` +
+        `${linkedName} <small>(${formatBytes(enhancer.sizeBytes)})</small> ` +
         `<button class="download-btn">download</button>` +
         `<small class="progress-text"></small>`;
       div

@@ -1,16 +1,22 @@
 import xsegPatch from "./patches/xseg_1.patch.json";
-import type { Patch } from "./model-patch";
+import { patchTransform, type Patch } from "../shared/model-patch";
+import type { ModelFile } from "../shared/model-cache";
+
+// Re-export so the rest of face-swap can keep importing ModelFile from here.
+export type { ModelFile } from "../shared/model-cache";
 
 const HF = "https://huggingface.co";
 
-export interface ModelFile {
-  id: string;
-  name: string;
-  url: string;
-  sizeBytes: number;
-  /** Optional binary patch applied to the downloaded bytes before caching. */
-  patch?: Patch;
-}
+// HF repo roots. Each corresponds to the `<org>/<repo>` prefix of the file
+// URLs below; keeping them as named constants so the model list UI can link
+// the cache-row names to the source page without us having to string-munge a
+// file URL at render time.
+const HF_FF_300 = `${HF}/facefusion/models-3.0.0`;
+const HF_FF_310 = `${HF}/facefusion/models-3.1.0`;
+const HF_FF_330 = `${HF}/facefusion/models-3.3.0`;
+const HF_FF_340 = `${HF}/facefusion/models-3.4.0`;
+const HF_DEEPGHS_INSIGHTFACE = `${HF}/deepghs/insightface`;
+const HF_DEEP_LIVE_CAM = `${HF}/hacksider/deep-live-cam`;
 
 export interface ModelSet {
   id: string;
@@ -24,30 +30,34 @@ export interface ModelSet {
 const FACE_DETECTOR: ModelFile = {
   id: "yoloface_8n",
   name: "YOLOFace 8n (face detection)",
-  url: `${HF}/facefusion/models-3.0.0/resolve/main/yoloface_8n.onnx`,
+  url: `${HF_FF_300}/resolve/main/yoloface_8n.onnx`,
   sizeBytes: 6_400_000,
+  hfRepoUrl: HF_FF_300,
 };
 
 const ARCFACE: ModelFile = {
   id: "arcface_w600k_r50",
   name: "ArcFace w600k (face recognition)",
-  url: `${HF}/facefusion/models-3.0.0/resolve/main/arcface_w600k_r50.onnx`,
+  url: `${HF_FF_300}/resolve/main/arcface_w600k_r50.onnx`,
   sizeBytes: 174_000_000,
+  hfRepoUrl: HF_FF_300,
 };
 
 const FACE_LANDMARKER: ModelFile = {
   id: "2dfan4",
   name: "2DFAN4 (face landmarks)",
-  url: `${HF}/facefusion/models-3.0.0/resolve/main/2dfan4.onnx`,
+  url: `${HF_FF_300}/resolve/main/2dfan4.onnx`,
   sizeBytes: 98_000_000,
+  hfRepoUrl: HF_FF_300,
 };
 
 const XSEG: ModelFile = {
   id: "xseg_1",
   name: "XSeg (face segmentation)",
-  url: `${HF}/facefusion/models-3.1.0/resolve/main/xseg_1.onnx`,
+  url: `${HF_FF_310}/resolve/main/xseg_1.onnx`,
   sizeBytes: 70_000_000,
-  patch: xsegPatch as Patch,
+  hfRepoUrl: HF_FF_310,
+  transform: patchTransform(xsegPatch as Patch),
 };
 
 // Alternate detector bundled with every swap set. MediaPipe FaceLandmarker is
@@ -69,8 +79,9 @@ export const MEDIAPIPE_FACE_LANDMARKER: ModelFile = {
 export const YUNET_FACE_DETECTOR: ModelFile = {
   id: "yunet_2023_mar",
   name: "YuNet 2023-03 (face detection + 5 landmarks)",
-  url: `${HF}/facefusion/models-3.4.0/resolve/main/yunet_2023_mar.onnx`,
+  url: `${HF_FF_340}/resolve/main/yunet_2023_mar.onnx`,
   sizeBytes: 232_000,
+  hfRepoUrl: HF_FF_340,
 };
 
 // SCRFD detectors. Same architecture, different backbone sizes. Both
@@ -81,8 +92,9 @@ export const YUNET_FACE_DETECTOR: ModelFile = {
 export const SCRFD_500M: ModelFile = {
   id: "scrfd_500m",
   name: "SCRFD 500m (face detection + 5 landmarks)",
-  url: `${HF}/deepghs/insightface/resolve/main/buffalo_s/det_500m.onnx`,
+  url: `${HF_DEEPGHS_INSIGHTFACE}/resolve/main/buffalo_s/det_500m.onnx`,
   sizeBytes: 2_525_000,
+  hfRepoUrl: HF_DEEPGHS_INSIGHTFACE,
 };
 
 export const DETECTOR_OPTIONS = [
@@ -110,20 +122,23 @@ export const ENHANCERS: ModelFile[] = [
   {
     id: "gfpgan_1.4",
     name: "GFPGAN 1.4",
-    url: `${HF}/facefusion/models-3.0.0/resolve/main/gfpgan_1.4.onnx`,
+    url: `${HF_FF_300}/resolve/main/gfpgan_1.4.onnx`,
     sizeBytes: 340_000_000,
+    hfRepoUrl: HF_FF_300,
   },
   {
     id: "restoreformer_plus_plus",
     name: "RestoreFormer++",
-    url: `${HF}/facefusion/models-3.0.0/resolve/main/restoreformer_plus_plus.onnx`,
+    url: `${HF_FF_300}/resolve/main/restoreformer_plus_plus.onnx`,
     sizeBytes: 294_000_000,
+    hfRepoUrl: HF_FF_300,
   },
   {
     id: "codeformer",
     name: "CodeFormer (slower)",
-    url: `${HF}/facefusion/models-3.0.0/resolve/main/codeformer.onnx`,
+    url: `${HF_FF_300}/resolve/main/codeformer.onnx`,
     sizeBytes: 377_000_000,
+    hfRepoUrl: HF_FF_300,
   },
 ];
 
@@ -175,8 +190,9 @@ export const MODEL_SETS: ModelSet[] = [
     primary: {
       id: "hyperswap_1a_256",
       name: "HyperSwap 1a (face swap)",
-      url: `${HF}/facefusion/models-3.3.0/resolve/main/hyperswap_1a_256.onnx`,
+      url: `${HF_FF_330}/resolve/main/hyperswap_1a_256.onnx`,
       sizeBytes: 403_000_000,
+      hfRepoUrl: HF_FF_330,
     },
     dependencies: HYPERSWAP_DEPS,
   },
@@ -187,8 +203,9 @@ export const MODEL_SETS: ModelSet[] = [
     primary: {
       id: "hyperswap_1b_256",
       name: "HyperSwap 1b (face swap)",
-      url: `${HF}/facefusion/models-3.3.0/resolve/main/hyperswap_1b_256.onnx`,
+      url: `${HF_FF_330}/resolve/main/hyperswap_1b_256.onnx`,
       sizeBytes: 403_000_000,
+      hfRepoUrl: HF_FF_330,
     },
     dependencies: HYPERSWAP_DEPS,
   },
@@ -199,8 +216,9 @@ export const MODEL_SETS: ModelSet[] = [
     primary: {
       id: "hyperswap_1c_256",
       name: "HyperSwap 1c (face swap)",
-      url: `${HF}/facefusion/models-3.3.0/resolve/main/hyperswap_1c_256.onnx`,
+      url: `${HF_FF_330}/resolve/main/hyperswap_1c_256.onnx`,
       sizeBytes: 403_000_000,
+      hfRepoUrl: HF_FF_330,
     },
     dependencies: HYPERSWAP_DEPS,
   },
@@ -211,8 +229,9 @@ export const MODEL_SETS: ModelSet[] = [
     primary: {
       id: "inswapper_128_fp16",
       name: "inswapper 128 fp16 (face swap)",
-      url: "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx",
+      url: `${HF_DEEP_LIVE_CAM}/resolve/main/inswapper_128_fp16.onnx`,
       sizeBytes: 277_000_000,
+      hfRepoUrl: HF_DEEP_LIVE_CAM,
     },
     dependencies: INSWAPPER_DEPS,
   },
@@ -223,8 +242,9 @@ export const MODEL_SETS: ModelSet[] = [
     primary: {
       id: "inswapper_128",
       name: "inswapper 128 fp32 (face swap)",
-      url: "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx",
+      url: `${HF_DEEP_LIVE_CAM}/resolve/main/inswapper_128.onnx`,
       sizeBytes: 554_000_000,
+      hfRepoUrl: HF_DEEP_LIVE_CAM,
     },
     dependencies: INSWAPPER_DEPS,
   },
