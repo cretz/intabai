@@ -130,7 +130,10 @@ export class PatchApplier {
       }
 
       // Apply any action whose trigger offset is exactly here.
-      if (this.actionIdx < this.actions.length && this.srcPos === this.actions[this.actionIdx].offset) {
+      if (
+        this.actionIdx < this.actions.length &&
+        this.srcPos === this.actions[this.actionIdx].offset
+      ) {
         const a = this.actions[this.actionIdx++];
         if (a.type === "edit") {
           if (a.edit.insert.length > 0) {

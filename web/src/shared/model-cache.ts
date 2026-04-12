@@ -221,13 +221,21 @@ export class ModelCache {
 
     const closeSidecars = async () => {
       for (const stream of sidecars.values()) {
-        try { await stream.close(); } catch { /* ignore */ }
+        try {
+          await stream.close();
+        } catch {
+          /* ignore */
+        }
       }
     };
 
     const removeSidecars = async () => {
       for (const k of sidecarKeys) {
-        try { await dir.removeEntry(k); } catch { /* ignore */ }
+        try {
+          await dir.removeEntry(k);
+        } catch {
+          /* ignore */
+        }
       }
     };
 
@@ -254,9 +262,21 @@ export class ModelCache {
       await writable.close();
       await closeSidecars();
     } catch (err) {
-      try { await writable.close(); } catch { /* ignore */ }
-      try { await closeSidecars(); } catch { /* ignore */ }
-      try { await dir.removeEntry(key); } catch { /* ignore */ }
+      try {
+        await writable.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await closeSidecars();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await dir.removeEntry(key);
+      } catch {
+        /* ignore */
+      }
       await removeSidecars();
       throw err;
     }
@@ -270,7 +290,11 @@ export class ModelCache {
       try {
         await applier.verify(buf);
       } catch (err) {
-        try { await dir.removeEntry(key); } catch { /* ignore */ }
+        try {
+          await dir.removeEntry(key);
+        } catch {
+          /* ignore */
+        }
         await removeSidecars();
         throw err;
       }

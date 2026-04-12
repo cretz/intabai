@@ -32,8 +32,8 @@ export function buildSchedule(numSteps: number): {
   // sigma space, then converted back to timestep space.
 
   // sigma_max and sigma_min from the full schedule
-  const sMax = SHIFT * 1.0 / (1 + (SHIFT - 1) * 1.0); // t=1000
-  const sMin = SHIFT * (1 / NUM_TRAIN_TIMESTEPS) / (1 + (SHIFT - 1) * (1 / NUM_TRAIN_TIMESTEPS)); // t=1
+  const sMax = (SHIFT * 1.0) / (1 + (SHIFT - 1) * 1.0); // t=1000
+  const sMin = (SHIFT * (1 / NUM_TRAIN_TIMESTEPS)) / (1 + (SHIFT - 1) * (1 / NUM_TRAIN_TIMESTEPS)); // t=1
 
   const tStart = sMax * NUM_TRAIN_TIMESTEPS;
   const tEnd = sMin * NUM_TRAIN_TIMESTEPS;
@@ -53,7 +53,7 @@ export function buildSchedule(numSteps: number): {
   const sigmas = new Float64Array(numSteps + 1);
   for (let i = 0; i < numSteps; i++) {
     const s = rawTimesteps[i] / NUM_TRAIN_TIMESTEPS;
-    sigmas[i] = SHIFT * s / (1 + (SHIFT - 1) * s);
+    sigmas[i] = (SHIFT * s) / (1 + (SHIFT - 1) * s);
   }
   sigmas[numSteps] = 0; // final destination
 

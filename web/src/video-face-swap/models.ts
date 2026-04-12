@@ -18,7 +18,6 @@ const HF_FF_340 = `${HF}/facefusion/models-3.4.0`;
 const HF_DEEPGHS_INSIGHTFACE = `${HF}/deepghs/insightface`;
 const HF_DEEP_LIVE_CAM = `${HF}/hacksider/deep-live-cam`;
 
-
 export interface ModelSet {
   id: string;
   name: string;

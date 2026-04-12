@@ -57,9 +57,7 @@ export function applyStoredTheme(): void {
  *  unavailable. */
 function resolvedAutoLabel(): string {
   if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "auto: dark"
-      : "auto: light";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "auto: dark" : "auto: light";
   }
   return "auto";
 }
@@ -91,8 +89,7 @@ export function initThemeSelect(select: HTMLSelectElement): void {
 
   select.addEventListener("change", () => {
     const v = select.value;
-    const choice: ThemeChoice =
-      v === "light" || v === "dark" ? v : "auto";
+    const choice: ThemeChoice = v === "light" || v === "dark" ? v : "auto";
     writeStored(choice);
     applyTheme(choice);
   });

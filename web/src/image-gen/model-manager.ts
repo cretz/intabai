@@ -111,10 +111,7 @@ export class ImageGenModelManager {
     this.container.appendChild(lowerQualitySection);
 
     for (const set of IMAGE_GEN_MODELS) {
-      const parent =
-        modelSection(set) === "recommended"
-          ? recommendedSection
-          : lowerQualitySection;
+      const parent = modelSection(set) === "recommended" ? recommendedSection : lowerQualitySection;
       await this.renderSet(set, parent);
     }
 
@@ -256,10 +253,7 @@ export class ImageGenModelManager {
   private refreshLegend(): void {
     if (!this.legendEl) return;
     const n = this.readySets.size;
-    const label =
-      n === 0
-        ? "models (at least 1 needed)"
-        : `models (${n} cached)`;
+    const label = n === 0 ? "models (at least 1 needed)" : `models (${n} cached)`;
     this.legendEl.textContent = label;
   }
 

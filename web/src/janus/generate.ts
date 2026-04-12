@@ -244,10 +244,7 @@ export const janusGenerateFn: GenerateFn = {
     // transformers.js consumer in the project.
     env.useCustomCache = true;
     const cacheAdapter = new JanusCacheAdapter(input.cache, JANUS_PRO_1B_FILES);
-    cacheAdapter.addSidecar(
-      "onnx/language_model_q4f16.onnx_data",
-      JANUS_LANGUAGE_MODEL_SIDECAR_ID,
-    );
+    cacheAdapter.addSidecar("onnx/language_model_q4f16.onnx_data", JANUS_LANGUAGE_MODEL_SIDECAR_ID);
     env.customCache = cacheAdapter;
     // Stop the library from trying to also fetch from local file paths
     // (it would warn about node-only paths in the browser otherwise).

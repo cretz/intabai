@@ -134,9 +134,10 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   cb.checkAborted();
 
   const schedulerOpts = { numInferenceSteps: schedulerSteps, guidanceScale: cfg };
-  const scheduler = set.schedulerType === "euler"
-    ? new EulerScheduler(schedulerOpts)
-    : new DdimScheduler(schedulerOpts);
+  const scheduler =
+    set.schedulerType === "euler"
+      ? new EulerScheduler(schedulerOpts)
+      : new DdimScheduler(schedulerOpts);
 
   const timeIds = buildTimeIds(width, height);
 
@@ -185,7 +186,9 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const useCfg = cfg > 1;
 
   log(`[sdxl] initial latent: ${latent.length} floats, ${JSON.stringify(statsOf(latent))}`);
-  log(`[sdxl] scheduler: ${schedulerSteps} steps (loop from ${loopStart}), CFG=${cfg}${useCfg ? "" : " (guidance disabled)"}`);
+  log(
+    `[sdxl] scheduler: ${schedulerSteps} steps (loop from ${loopStart}), CFG=${cfg}${useCfg ? "" : " (guidance disabled)"}`,
+  );
 
   // ----- 5. Denoise loop -----
   let stepTimeSum = 0;
@@ -200,9 +203,8 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
 
     // Euler scheduler requires scaling the model input by 1/sqrt(sigma^2+1)
     // before each UNet call. The unscaled latent is kept for the step update.
-    const modelInput = scheduler instanceof EulerScheduler
-      ? scheduler.scaleModelInput(latent, step)
-      : latent;
+    const modelInput =
+      scheduler instanceof EulerScheduler ? scheduler.scaleModelInput(latent, step) : latent;
 
     let noisePred: Float32Array;
     if (useCfg) {
@@ -251,7 +253,9 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
     cb.stats(
       `step ${stepDisplay}/${totalLoopSteps} | ${formatMs(avgMs)} avg/step | ~${formatEta(etaSec)} left`,
     );
-    log(`  [sdxl] step ${stepDisplay} (${stepMs.toFixed(0)} ms): latent=${fmtStats(statsOf(latent))}`);
+    log(
+      `  [sdxl] step ${stepDisplay} (${stepMs.toFixed(0)} ms): latent=${fmtStats(statsOf(latent))}`,
+    );
     cb.advance();
     cb.checkAborted();
   }

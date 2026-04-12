@@ -28,12 +28,7 @@ import type { ZImageModelSet, ZImageShardedModelSet } from "../sd15/models";
 import type { ModelCache } from "../shared/model-cache";
 import { isExternalData, type OrtModelFile } from "../sd15/ort-helpers";
 import { buildSchedule } from "./scheduler";
-import {
-  formatEta,
-  formatMs,
-  gaussianNoise,
-  mulberry32,
-} from "../image-gen/generate-utils";
+import { formatEta, formatMs, gaussianNoise, mulberry32 } from "../image-gen/generate-utils";
 import type {
   GenerateCallbacks,
   GenerateFn,
@@ -66,8 +61,9 @@ async function createZImageSession(
       graphOptimizationLevel: "all",
       ...extraOptions,
     };
-    (sessionOptions as unknown as { externalData: Array<{ path: string; data: string }> })
-      .externalData = [{ path: model.dataPath, data: dataUrl }];
+    (
+      sessionOptions as unknown as { externalData: Array<{ path: string; data: string }> }
+    ).externalData = [{ path: model.dataPath, data: dataUrl }];
     return await ort.InferenceSession.create(graphUrl, sessionOptions);
   } finally {
     revokeGraph();
@@ -115,7 +111,7 @@ function getGpuDevice(): GPUDevice | undefined {
 function createGpuBuf(gpuDevice: GPUDevice, dataType: string, dims: readonly number[]): ort.Tensor {
   const numEl = dims.reduce((a, b) => a * b, 1);
   const bpe = dataType === "int64" ? 8 : dataType === "float16" ? 2 : 4;
-  const size = Math.max(16, Math.ceil(numEl * bpe / 4) * 4);
+  const size = Math.max(16, Math.ceil((numEl * bpe) / 4) * 4);
   const buf = gpuDevice.createBuffer({
     usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     size,
@@ -129,19 +125,32 @@ function writeGpu(gpuDevice: GPUDevice, tensor: ort.Tensor, data: Float32Array):
   const buf = (tensor as any).gpuBuffer as GPUBuffer;
   const aligned = Math.ceil(data.byteLength / 4) * 4;
   const enc = gpuDevice.createCommandEncoder();
-  const tmp = gpuDevice.createBuffer({ size: aligned, usage: GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
-  new Uint8Array(tmp.getMappedRange()).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  const tmp = gpuDevice.createBuffer({
+    size: aligned,
+    usage: GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  new Uint8Array(tmp.getMappedRange()).set(
+    new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+  );
   tmp.unmap();
   enc.copyBufferToBuffer(tmp, 0, buf, 0, aligned);
   gpuDevice.queue.submit([enc.finish()]);
 }
 
-async function readGpu(gpuDevice: GPUDevice, tensor: ort.Tensor, count: number): Promise<Float32Array> {
+async function readGpu(
+  gpuDevice: GPUDevice,
+  tensor: ort.Tensor,
+  count: number,
+): Promise<Float32Array> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const buf = (tensor as any).gpuBuffer as GPUBuffer;
   const bytes = count * 4;
   const aligned = Math.ceil(bytes / 4) * 4;
-  const rb = gpuDevice.createBuffer({ size: aligned, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const rb = gpuDevice.createBuffer({
+    size: aligned,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
   const enc = gpuDevice.createCommandEncoder();
   enc.copyBufferToBuffer(buf, 0, rb, 0, aligned);
   gpuDevice.queue.submit([enc.finish()]);
@@ -155,10 +164,17 @@ async function readGpu(gpuDevice: GPUDevice, tensor: ort.Tensor, count: number):
 // --- Monolithic transformer loop (original, unchanged behavior) ---
 
 async function runMonolithicTransformerLoop(
-  set: ZImageModelSet, cache: ModelCache, numSteps: number,
-  initialLatent: Float32Array, encoderHiddenState: Float32Array,
-  latentH: number, latentW: number, latentLen: number, sequenceLength: number,
-  cb: GenerateCallbacks, log: (msg: string) => void,
+  set: ZImageModelSet,
+  cache: ModelCache,
+  numSteps: number,
+  initialLatent: Float32Array,
+  encoderHiddenState: Float32Array,
+  latentH: number,
+  latentW: number,
+  latentLen: number,
+  sequenceLength: number,
+  cb: GenerateCallbacks,
+  log: (msg: string) => void,
 ): Promise<Float32Array> {
   cb.status("loading transformer (~3.7 GB)...");
   const tXfmrLoad = performance.now();
@@ -293,14 +309,23 @@ const SHARD_PREFETCH_DEPTH = 0;
 const DATA_PREFETCH_DEPTH = 1;
 
 async function runShardedTransformerLoop(
-  set: ZImageShardedModelSet, cache: ModelCache, numSteps: number,
-  initialLatent: Float32Array, encoderHiddenState: Float32Array,
-  latentH: number, latentW: number, _latentLen: number, sequenceLength: number,
-  cb: GenerateCallbacks, log: (msg: string) => void,
+  set: ZImageShardedModelSet,
+  cache: ModelCache,
+  numSteps: number,
+  initialLatent: Float32Array,
+  encoderHiddenState: Float32Array,
+  latentH: number,
+  latentW: number,
+  _latentLen: number,
+  sequenceLength: number,
+  cb: GenerateCallbacks,
+  log: (msg: string) => void,
 ): Promise<Float32Array> {
   const shards = set.transformerShards;
   const nShards = shards.length;
-  log(`[zimage-sharded] ${nShards} shards, ${numSteps} steps, shardPrefetch=${SHARD_PREFETCH_DEPTH}, dataPrefetch=${DATA_PREFETCH_DEPTH}`);
+  log(
+    `[zimage-sharded] ${nShards} shards, ${numSteps} steps, shardPrefetch=${SHARD_PREFETCH_DEPTH}, dataPrefetch=${DATA_PREFETCH_DEPTH}`,
+  );
 
   // Keep the scheduler on WASM so the shard sessions are the only live
   // WebGPU sessions during the DiT loop. ORT-web's WebGPU allocator/cache
@@ -326,7 +351,11 @@ async function runShardedTransformerLoop(
   let cachedHiddenData: Float32Array = initialLatent;
 
   // Graph-level inputs as CPU tensors (re-used every step)
-  const cpuEncHidden = new ort.Tensor("float32", encoderHiddenState, [1, sequenceLength, set.hiddenDim]);
+  const cpuEncHidden = new ort.Tensor("float32", encoderHiddenState, [
+    1,
+    sequenceLength,
+    set.hiddenDim,
+  ]);
 
   cb.advance();
   cb.checkAborted();
@@ -352,10 +381,12 @@ async function runShardedTransformerLoop(
   //
   // The graph blob URL is still created and revoked per shard (the graph
   // file is ~170 MB and only touched on its own shard's create).
-  const createShardSession = async (shardIdx: number, dataBytes: Uint8Array): Promise<ort.InferenceSession> => {
+  const createShardSession = async (
+    shardIdx: number,
+    dataBytes: Uint8Array,
+  ): Promise<ort.InferenceSession> => {
     const shard = shards[shardIdx];
-    const { url: graphUrl, revoke: revokeGraph } =
-      await cache.loadFileAsBlobUrl(shard.graph);
+    const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(shard.graph);
     try {
       const sessionOptions: ort.InferenceSession.SessionOptions = {
         executionProviders: defaultProviders(),
@@ -363,8 +394,9 @@ async function runShardedTransformerLoop(
       };
       // ORT's type for externalData.data is `string`, but the runtime
       // accepts Uint8Array / Blob / File too (see loadFile in ort.all.mjs).
-      (sessionOptions as unknown as { externalData: Array<{ path: string; data: Uint8Array }> })
-        .externalData = [{ path: shard.dataPath, data: dataBytes }];
+      (
+        sessionOptions as unknown as { externalData: Array<{ path: string; data: Uint8Array }> }
+      ).externalData = [{ path: shard.dataPath, data: dataBytes }];
       return await ort.InferenceSession.create(graphUrl, sessionOptions);
     } finally {
       revokeGraph();
@@ -402,12 +434,15 @@ async function runShardedTransformerLoop(
   const enqueueCreate = (flatIdx: number): void => {
     const shardIdx = flatIdx % nShards;
     const dataPromise = dataQueue.shift();
-    if (!dataPromise) throw new Error(`data queue empty while enqueueing create at flatIdx ${flatIdx}`);
-    createQueue.push((async () => {
-      const dataBytes = await dataPromise;
-      const session = await createShardSession(shardIdx, dataBytes);
-      return { flatIdx, shardIdx, session };
-    })());
+    if (!dataPromise)
+      throw new Error(`data queue empty while enqueueing create at flatIdx ${flatIdx}`);
+    createQueue.push(
+      (async () => {
+        const dataBytes = await dataPromise;
+        const session = await createShardSession(shardIdx, dataBytes);
+        return { flatIdx, shardIdx, session };
+      })(),
+    );
   };
 
   for (let i = 0; i < Math.min(effectiveCreatePrefetchDepth, totalFlat); i++) {
@@ -418,7 +453,11 @@ async function runShardedTransformerLoop(
   // nothing to release, just await to avoid unhandled-rejection noise.
   const drainDataQueue = async (): Promise<void> => {
     while (dataQueue.length > 0) {
-      try { await dataQueue.shift(); } catch { /* best-effort */ }
+      try {
+        await dataQueue.shift();
+      } catch {
+        /* best-effort */
+      }
     }
   };
 
@@ -446,7 +485,7 @@ async function runShardedTransformerLoop(
       ? set.progress.repeatedUnitWeightBytes
       : shards.map((shard) => shard.graph.sizeBytes + shard.data.sizeBytes);
   const totalWeightPerStep = shardWeights.reduce((sum, weight) => sum + weight, 0);
-  let rateStartMs = 0;  // set at end of shard 0 / step 0
+  let rateStartMs = 0; // set at end of shard 0 / step 0
   let bytesSinceRateStart = 0;
   const tLoop = performance.now();
 
@@ -455,7 +494,11 @@ async function runShardedTransformerLoop(
       const stepDisplay = step + 1;
       const tStep = performance.now();
 
-      const cpuTimestep = new ort.Tensor("float32", Float32Array.from([schedule.timesteps[step]]), [1]);
+      const cpuTimestep = new ort.Tensor(
+        "float32",
+        Float32Array.from([schedule.timesteps[step]]),
+        [1],
+      );
       // hidden_states for shard 0 comes from the cached scheduler output (or
       // initial latent for step 0). We never read this from GPU because the
       // sharded path keeps inter-shard values on CPU.
@@ -483,7 +526,9 @@ async function runShardedTransformerLoop(
           if (!pendingCreate) throw new Error(`create queue empty at flatIdx ${flatIdx}`);
           const ready = await pendingCreate;
           if (ready.flatIdx !== flatIdx || ready.shardIdx !== si) {
-            throw new Error(`create queue mismatch at flatIdx ${flatIdx}: got flatIdx=${ready.flatIdx}, shard=${ready.shardIdx}`);
+            throw new Error(
+              `create queue mismatch at flatIdx ${flatIdx}: got flatIdx=${ready.flatIdx}, shard=${ready.shardIdx}`,
+            );
           }
           sess = ready.session;
           createMs = performance.now() - tCreateWait;
@@ -542,7 +587,7 @@ async function runShardedTransformerLoop(
           const rt = results[key];
           const src = rt.data;
           // Copy using the same typed array constructor to preserve dtype
-          const copy = new (src.constructor as { new(a: ArrayLike<never>): typeof src })(
+          const copy = new (src.constructor as { new (a: ArrayLike<never>): typeof src })(
             src as unknown as ArrayLike<never>,
           );
           tensorPool[key] = new ort.Tensor(rt.type, copy, rt.dims);
@@ -552,7 +597,7 @@ async function runShardedTransformerLoop(
         // --- Phase: release + GPU flush ---
         const tRelease = performance.now();
         await sess.release();
-        gpuDevice.queue.submit([]);  // empty submit to flush pending frees
+        gpuDevice.queue.submit([]); // empty submit to flush pending frees
         await gpuDevice.queue.onSubmittedWorkDone();
         const releaseMs = performance.now() - tRelease;
 
@@ -567,7 +612,8 @@ async function runShardedTransformerLoop(
           bytesSinceRateStart += shardWeights[si];
         }
         const remainingThisStepWeight =
-          totalWeightPerStep - shardWeights.slice(0, si + 1).reduce((sum, weight) => sum + weight, 0);
+          totalWeightPerStep -
+          shardWeights.slice(0, si + 1).reduce((sum, weight) => sum + weight, 0);
         const remainingFutureStepsWeight = (numSteps - stepDisplay) * totalWeightPerStep;
         const remainingWeight = remainingThisStepWeight + remainingFutureStepsWeight;
         let etaLabel: string;
@@ -578,10 +624,10 @@ async function runShardedTransformerLoop(
         } else {
           etaLabel = "estimating...";
         }
-        cb.stats(
-          `step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${etaLabel}`,
+        cb.stats(`step ${stepDisplay}/${numSteps} shard ${si + 1}/${nShards} | ${etaLabel}`);
+        log(
+          `  [zimage-sharded] step ${stepDisplay} shard ${si}: dataWait ${dataWaitMs.toFixed(0)}ms, create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms (total ${shardMs.toFixed(0)}ms)`,
         );
-        log(`  [zimage-sharded] step ${stepDisplay} shard ${si}: dataWait ${dataWaitMs.toFixed(0)}ms, create ${createMs.toFixed(0)}ms, run ${runMs.toFixed(0)}ms, release ${releaseMs.toFixed(0)}ms (total ${shardMs.toFixed(0)}ms)`);
       }
 
       // Final shard output: unified_results -> noise_pred for scheduler
@@ -648,7 +694,9 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
     tokenizer,
     prompt,
   );
-  log(`[zimage] tokenized: ${sequenceLength} tokens (${usedTemplate ? "chat template" : "manual fallback"})`);
+  log(
+    `[zimage] tokenized: ${sequenceLength} tokens (${usedTemplate ? "chat template" : "manual fallback"})`,
+  );
   cb.advance();
   cb.checkAborted();
 
@@ -666,10 +714,11 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   };
   const teResults = await teSess.run(teFeeds);
   // Output: encoder_hidden_state [B, seq_len, 2560]
-  const hiddenStateKey =
-    teResults["encoder_hidden_state"] ? "encoder_hidden_state" :
-    teResults["encoder_hidden_states"] ? "encoder_hidden_states" :
-    teSess.outputNames[0];
+  const hiddenStateKey = teResults["encoder_hidden_state"]
+    ? "encoder_hidden_state"
+    : teResults["encoder_hidden_states"]
+      ? "encoder_hidden_states"
+      : teSess.outputNames[0];
   const teOutTensor = teResults[hiddenStateKey];
   const teOutData = teOutTensor.data;
 
@@ -698,7 +747,9 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   } else {
     // Unknown type, try direct copy
     encoderHiddenState = new Float32Array(teOutData as unknown as ArrayLike<number>);
-    log(`[zimage] WARNING: text encoder returned unexpected data type ${teOutData.constructor.name}`);
+    log(
+      `[zimage] WARNING: text encoder returned unexpected data type ${teOutData.constructor.name}`,
+    );
   }
 
   log(`[zimage] text encoder ran in ${(performance.now() - tEncRun).toFixed(1)} ms`);
@@ -713,15 +764,31 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   let latent: Float32Array;
   if (isSharded) {
     latent = await runShardedTransformerLoop(
-      set as ZImageShardedModelSet, cache, numSteps,
-      gaussianNoise(latentLen, rng), encoderHiddenState,
-      latentH, latentW, latentLen, sequenceLength, cb, log,
+      set as ZImageShardedModelSet,
+      cache,
+      numSteps,
+      gaussianNoise(latentLen, rng),
+      encoderHiddenState,
+      latentH,
+      latentW,
+      latentLen,
+      sequenceLength,
+      cb,
+      log,
     );
   } else {
     latent = await runMonolithicTransformerLoop(
-      set as ZImageModelSet, cache, numSteps,
-      gaussianNoise(latentLen, rng), encoderHiddenState,
-      latentH, latentW, latentLen, sequenceLength, cb, log,
+      set as ZImageModelSet,
+      cache,
+      numSteps,
+      gaussianNoise(latentLen, rng),
+      encoderHiddenState,
+      latentH,
+      latentW,
+      latentLen,
+      sequenceLength,
+      cb,
+      log,
     );
   }
 
@@ -739,7 +806,13 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
 
   // VAE pre-process: [B, 16, 1, H/8, W/8] -> [B, 16, H/8, W/8] (squeeze + scale)
   const preResults = await vaePreSess.run({
-    latents: new ort.Tensor("float32", new Float32Array(latent), [1, LATENT_CHANNELS, 1, latentH, latentW]),
+    latents: new ort.Tensor("float32", new Float32Array(latent), [
+      1,
+      LATENT_CHANNELS,
+      1,
+      latentH,
+      latentW,
+    ]),
   });
   const scaledKey = preResults["scaled_latents"] ? "scaled_latents" : vaePreSess.outputNames[0];
   const scaledLatent = new Float32Array(preResults[scaledKey].data as Float32Array);
@@ -816,8 +889,7 @@ async function loadTokenizer(
   // prompt - the auto-injected "You are a helpful assistant" prefix
   // was conditioning the transformer on extra tokens MS never sends,
   // which made the model invent decorative marks not in the prompt.
-  tokenizer.chat_template =
-    `{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}`;
+  tokenizer.chat_template = `{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}`;
 
   cachedTokenizer = tokenizer;
   return tokenizer;
@@ -828,7 +900,12 @@ function tokenizePrompt(
   tokenizer: any,
   prompt: string,
   maxLength = 512,
-): { inputIds: BigInt64Array; attentionMask: BigInt64Array; sequenceLength: number; usedTemplate: boolean } {
+): {
+  inputIds: BigInt64Array;
+  attentionMask: BigInt64Array;
+  sequenceLength: number;
+  usedTemplate: boolean;
+} {
   let formatted: string;
   let usedTemplate = false;
   try {
@@ -842,8 +919,7 @@ function tokenizePrompt(
   } catch {
     // Mirrors the chat_template above (no system prompt, no <think>)
     // so a fallback path produces the same tokens MS's pipeline does.
-    formatted =
-      `<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`;
+    formatted = `<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`;
   }
 
   const inputs = tokenizer([formatted], {

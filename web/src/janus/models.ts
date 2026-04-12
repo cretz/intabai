@@ -204,8 +204,7 @@ export const JANUS_PRO_1B_FILES: ModelFile[] = [
 /** OPFS cache key for the language_model external-data sidecar, produced by
  *  the split transform during download. The cache adapter needs this to serve
  *  the sidecar when transformers.js requests it. */
-export const JANUS_LANGUAGE_MODEL_SIDECAR_ID =
-  (languageModelSplit as Patch).sidecar!.fileId;
+export const JANUS_LANGUAGE_MODEL_SIDECAR_ID = (languageModelSplit as Patch).sidecar!.fileId;
 
 /** HF model id passed to transformers.js .from_pretrained(). */
 export const JANUS_PRO_1B_MODEL_ID = JANUS_REPO_ID;

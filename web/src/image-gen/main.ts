@@ -100,7 +100,10 @@ function modelDefaults(set: ModelSet): PerModelSettings {
 
 /** Resolve a per-model setting: use the user's explicit value if set,
  *  otherwise fall back to the model default. */
-function resolvePerModel(saved: PerModelSettings | undefined, set: ModelSet): Required<PerModelSettings> {
+function resolvePerModel(
+  saved: PerModelSettings | undefined,
+  set: ModelSet,
+): Required<PerModelSettings> {
   const d = modelDefaults(set);
   return {
     width: saved?.width ?? d.width!,
@@ -225,11 +228,7 @@ function captureSettings(): ImageGenSettings {
  *  placeholders from the model defaults instead of setting input.value. */
 function applyPerModelSettings(saved: PerModelSettings | undefined, set: ModelSet): void {
   const d = modelDefaults(set);
-  const setOrPlaceholder = (
-    input: HTMLInputElement,
-    val: number | undefined,
-    fallback: number,
-  ) => {
+  const setOrPlaceholder = (input: HTMLInputElement, val: number | undefined, fallback: number) => {
     if (val !== undefined) {
       input.value = String(val);
       input.placeholder = "";
@@ -423,8 +422,7 @@ generateBtn.addEventListener("click", async () => {
   const height = Math.max(64, Math.min(maxRes, Math.ceil(pm.height / 8) * 8));
   const numSteps = Math.max(1, Math.min(200, pm.steps));
   const cfg = pm.cfg;
-  const seedNum =
-    pm.seed === "" ? Math.floor(Math.random() * 0x100000000) : Number(pm.seed) >>> 0;
+  const seedNum = pm.seed === "" ? Math.floor(Math.random() * 0x100000000) : Number(pm.seed) >>> 0;
 
   const refImage: RefImageInput | null =
     refImageElement && set.capabilities.img2img && set.img2img
@@ -471,15 +469,18 @@ generateBtn.addEventListener("click", async () => {
   };
   const log = debugEnabled
     ? (msg: string) => {
-      console.log("[image-gen] " + msg);
-      appendDebug(msg);
-    }
+        console.log("[image-gen] " + msg);
+        appendDebug(msg);
+      }
     : (_: string) => {};
   if (debugEnabled && "gpu" in navigator) {
-    navigator.gpu.requestAdapter().then(a => {
-      const name = a?.info?.description || a?.info?.device || a?.info?.vendor || "unknown";
-      console.info(`[image-gen] WebGPU adapter: ${name}`);
-    }).catch(() => {});
+    navigator.gpu
+      .requestAdapter()
+      .then((a) => {
+        const name = a?.info?.description || a?.info?.device || a?.info?.vendor || "unknown";
+        console.info(`[image-gen] WebGPU adapter: ${name}`);
+      })
+      .catch(() => {});
   }
   log(`pipeline=${set.family} model=${set.id}`);
 

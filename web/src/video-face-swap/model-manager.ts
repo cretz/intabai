@@ -94,8 +94,7 @@ export class ModelManager {
     const linkedName = linkedStrong(set.name, set.primary.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `${linkedName} <small>(cached)</small> ` +
-        `<button class="delete-btn">delete</button>`;
+        `${linkedName} <small>(cached)</small> ` + `<button class="delete-btn">delete</button>`;
       div.querySelector(".delete-btn")!.addEventListener("click", () => this.onDeleteSet(set, div));
     } else {
       div.innerHTML =
@@ -162,8 +161,7 @@ export class ModelManager {
     const linkedName = linkedStrong(enhancer.name, enhancer.hfRepoUrl);
     if (cached) {
       div.innerHTML =
-        `${linkedName} <small>(cached)</small> ` +
-        `<button class="delete-btn">delete</button>`;
+        `${linkedName} <small>(cached)</small> ` + `<button class="delete-btn">delete</button>`;
       div
         .querySelector(".delete-btn")!
         .addEventListener("click", () => this.onDeleteEnhancer(enhancer, div));

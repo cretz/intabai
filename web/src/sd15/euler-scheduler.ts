@@ -63,7 +63,9 @@ export class EulerScheduler {
     // For N=1: [999]. For N=4: [999, 749, 499, 249].
     this.timesteps = new Int32Array(opts.numInferenceSteps);
     for (let i = 0; i < opts.numInferenceSteps; i++) {
-      const t = Math.round((opts.numInferenceSteps - i) * (NUM_TRAIN_TIMESTEPS / opts.numInferenceSteps)) - 1;
+      const t =
+        Math.round((opts.numInferenceSteps - i) * (NUM_TRAIN_TIMESTEPS / opts.numInferenceSteps)) -
+        1;
       this.timesteps[i] = Math.max(0, Math.min(NUM_TRAIN_TIMESTEPS - 1, t));
     }
 

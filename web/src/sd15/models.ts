@@ -198,7 +198,12 @@ export interface ZImageShardedModelSet extends Omit<ZImageModelSet, "transformer
   transformerShards: { graph: ModelFile; data: ModelFile; dataPath: string }[];
 }
 
-export type ModelSet = Sd15ModelSet | SdxlModelSet | JanusModelSet | ZImageModelSet | ZImageShardedModelSet;
+export type ModelSet =
+  | Sd15ModelSet
+  | SdxlModelSet
+  | JanusModelSet
+  | ZImageModelSet
+  | ZImageShardedModelSet;
 
 // =============================================================================
 // SD1.5 base, ONNX fp16. From nmkd's repo.
@@ -776,24 +781,84 @@ const ZIMAGE_SHARDED_VAE_PRE: ModelFile = {
 // external_data strings changed the graph bytes from the earlier shared-data
 // version.
 const ZIMAGE_SHARD_GRAPHS: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_600b_s0", name: "Z-Image transformer shard 0", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx`, sizeBytes: 83_489_820 },
-  { id: "zimage_sharded_xfmr_600b_s1", name: "Z-Image transformer shard 1", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx`, sizeBytes: 550_323_668 },
-  { id: "zimage_sharded_xfmr_600b_s2", name: "Z-Image transformer shard 2", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx`, sizeBytes: 377_565_157 },
-  { id: "zimage_sharded_xfmr_600b_s3", name: "Z-Image transformer shard 3", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx`, sizeBytes: 377_566_074 },
-  { id: "zimage_sharded_xfmr_600b_s4", name: "Z-Image transformer shard 4", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx`, sizeBytes: 286_583_178 },
-  { id: "zimage_sharded_xfmr_600b_s5", name: "Z-Image transformer shard 5", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx`, sizeBytes: 156_321 },
+  {
+    id: "zimage_sharded_xfmr_600b_s0",
+    name: "Z-Image transformer shard 0",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx`,
+    sizeBytes: 83_489_820,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_s1",
+    name: "Z-Image transformer shard 1",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx`,
+    sizeBytes: 550_323_668,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_s2",
+    name: "Z-Image transformer shard 2",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx`,
+    sizeBytes: 377_565_157,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_s3",
+    name: "Z-Image transformer shard 3",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx`,
+    sizeBytes: 377_566_074,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_s4",
+    name: "Z-Image transformer shard 4",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx`,
+    sizeBytes: 286_583_178,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_s5",
+    name: "Z-Image transformer shard 5",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx`,
+    sizeBytes: 156_321,
+  },
 ];
 
 // Per-shard external data files. Each holds only the initializer bytes that
 // the matching shard graph consumes (~56-225 MB each). This replaces the
 // old shared 2 GB monolithic transformer data reference for sharded sessions.
 const ZIMAGE_SHARD_DATA_FILES: ModelFile[] = [
-  { id: "zimage_sharded_xfmr_600b_d0", name: "Z-Image transformer shard 0 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx_data`, sizeBytes: 137_625_600 },
-  { id: "zimage_sharded_xfmr_600b_d1", name: "Z-Image transformer shard 1 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx_data`, sizeBytes: 412_876_800 },
-  { id: "zimage_sharded_xfmr_600b_d2", name: "Z-Image transformer shard 2 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx_data`, sizeBytes: 530_841_600 },
-  { id: "zimage_sharded_xfmr_600b_d3", name: "Z-Image transformer shard 3 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx_data`, sizeBytes: 530_841_600 },
-  { id: "zimage_sharded_xfmr_600b_d4", name: "Z-Image transformer shard 4 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx_data`, sizeBytes: 412_876_800 },
-  { id: "zimage_sharded_xfmr_600b_d5", name: "Z-Image transformer shard 5 data", url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx_data`, sizeBytes: 0 },
+  {
+    id: "zimage_sharded_xfmr_600b_d0",
+    name: "Z-Image transformer shard 0 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard0.onnx_data`,
+    sizeBytes: 137_625_600,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_d1",
+    name: "Z-Image transformer shard 1 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard1.onnx_data`,
+    sizeBytes: 412_876_800,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_d2",
+    name: "Z-Image transformer shard 2 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard2.onnx_data`,
+    sizeBytes: 530_841_600,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_d3",
+    name: "Z-Image transformer shard 3 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard3.onnx_data`,
+    sizeBytes: 530_841_600,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_d4",
+    name: "Z-Image transformer shard 4 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard4.onnx_data`,
+    sizeBytes: 412_876_800,
+  },
+  {
+    id: "zimage_sharded_xfmr_600b_d5",
+    name: "Z-Image transformer shard 5 data",
+    url: `${ZIMAGE_SHARDED_REPO}/onnx/transformer_model_q4f16_shard5.onnx_data`,
+    sizeBytes: 0,
+  },
 ];
 
 export const ZIMAGE_TURBO_SHARDED_MODEL: ZImageShardedModelSet = {
@@ -827,8 +892,10 @@ export const ZIMAGE_TURBO_SHARDED_MODEL: ZImageShardedModelSet = {
     maxResolution: 768,
     steps: 3,
     cfg: 0,
-    resolutionHelp: "384x384 is the mobile default to keep memory and run time in check. 512x512 and 768x768 are better desktop targets.",
-    stepsHelp: "3 is the mobile speed default so phones can finish a run in a reasonable time. Increase to 4-6 for better quality if you can tolerate the wait; 9 remains the desktop quality default.",
+    resolutionHelp:
+      "384x384 is the mobile default to keep memory and run time in check. 512x512 and 768x768 are better desktop targets.",
+    stepsHelp:
+      "3 is the mobile speed default so phones can finish a run in a reasonable time. Increase to 4-6 for better quality if you can tolerate the wait; 9 remains the desktop quality default.",
     cfgHelp: "Z-Image-Turbo does not use classifier-free guidance.",
     fixedResolution: false,
     fixedSteps: false,
