@@ -233,12 +233,14 @@
 
     <fieldset id="processing" style="display: none">
       <legend>processing</legend>
-      <progress id="progress" value="0" max="100" style="width: 100%"></progress>
-      <div style="margin-top: 6px"><strong id="status-line"></strong></div>
+      <video id="progress-video" width="200" height="200" autopictureinpicture></video>
       <div id="frame-line" style="margin-top: 4px"></div>
       <div id="timing-line" style="margin-top: 4px"></div>
       <div id="error-line" style="margin-top: 6px"></div>
-      <button type="button" id="cancel-btn" style="display: none; margin-top: 8px">cancel</button>
+      <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center">
+        <button type="button" id="cancel-btn" style="display: none">cancel</button>
+        <button type="button" id="pip-btn" style="display: none; margin-left: auto">PiP GPU keep alive</button>
+      </div>
     </fieldset>
 
     <div id="output"></div>

@@ -48,7 +48,6 @@ import type {
 // txt2img vs img2img mode: tokenize+encode, unet load, vae load. (The
 // per-tile vae decode units are added separately, replacing what would
 // have been a single "decode" unit.)
-const FIXED_PHASE_UNITS = 4;
 
 function computeSchedulerSteps(steps: number, refStrength: number, hasRef: boolean): number {
   // Inflate the scheduler step count so that after partial-start trimming
@@ -63,10 +62,7 @@ function estimate(input: GenerateInput): PipelineEstimate {
   const latentH = input.height / 8;
   const latentW = input.width / 8;
   const vaeTiles = vaeTileCount(latentH, latentW, input.tileVae);
-  const img2imgUnits = input.refImage ? 1 : 0;
-  // The denoise loop is `steps` units regardless of img2img inflation,
-  // because the actual loop only runs `steps` iterations.
-  const totalUnits = FIXED_PHASE_UNITS + img2imgUnits + input.steps + vaeTiles;
+  const totalUnits = input.steps + vaeTiles;
   return { totalUnits };
 }
 
@@ -95,7 +91,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const condIds = tokenizer.encode(prompt);
   const uncondIds = tokenizer.encode("");
   log(`tokenized: cond=${condIds.length} tokens, uncond=${uncondIds.length} tokens`);
-  cb.advance();
   cb.checkAborted();
 
   // ----- 2. Text encoder -----
@@ -109,7 +104,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   cb.status("releasing text encoder...");
   await encoder.release();
   log("text encoder released");
-  cb.advance();
   cb.checkAborted();
 
   // ----- 3. UNet load -----
@@ -117,7 +111,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const tUnetLoad = performance.now();
   const unet = await Unet.load(cache, set.unet);
   log(`UNet ORT session created in ${(performance.now() - tUnetLoad).toFixed(1)} ms`);
-  cb.advance();
   cb.checkAborted();
 
   const scheduler = new DdimScheduler({
@@ -154,7 +147,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
       const noise = gaussianNoise(latentLen, rng);
       latent = scheduler.addNoise(cleanLatent, noise, tStart);
     }
-    cb.advance();
     cb.checkAborted();
   } else {
     latent = gaussianNoise(latentLen, rng);
@@ -172,7 +164,7 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   for (let step = loopStart; step < schedulerSteps; step++) {
     const t = scheduler.timesteps[step];
     const stepDisplay = step - loopStart + 1;
-    cb.status(`denoising step ${stepDisplay} / ${totalLoopSteps} (t=${t})...`);
+    cb.status("denoising...");
     const tStep = performance.now();
     const uncondNoise = await unet.predictNoise(latent, t, uncondEmb, latentH, latentW);
     const condNoise = await unet.predictNoise(latent, t, condEmb, latentH, latentW);
@@ -190,6 +182,7 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
     cb.stats(
       `step ${stepDisplay}/${totalLoopSteps} | ${formatMs(avgMs)} avg/step | ~${formatEta(etaSec)} left`,
     );
+    cb.stepProgress(stepDisplay, totalLoopSteps, etaSec);
     log(
       `  step ${stepDisplay} (${stepMs.toFixed(0)} ms): ` +
         `uncond=${fmtStats(uncondStats)} cond=${fmtStats(condStats)} latent=${fmtStats(latentStats)}`,
@@ -209,7 +202,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const tVaeLoad = performance.now();
   const vae = await VaeDecoder.load(cache, set.vaeDecoder);
   log(`VAE decoder ORT session created in ${(performance.now() - tVaeLoad).toFixed(1)} ms`);
-  cb.advance();
   cb.checkAborted();
 
   const tDecode = performance.now();

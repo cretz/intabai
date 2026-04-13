@@ -9,6 +9,7 @@ import {
   PersistedSettings as PersistedSettingsStore,
   isMobile,
 } from "../shared/persisted-settings";
+import { ProgressVideo } from "../shared/progress-video";
 import { initThemeSelect } from "../shared/theme";
 
 {
@@ -96,8 +97,7 @@ const enhancerSelect = document.getElementById("enhancer-select") as HTMLSelectE
 const detectorSelect = document.getElementById("detector-select") as HTMLSelectElement;
 const swapBtn = document.getElementById("swap-btn") as HTMLButtonElement;
 const processingFieldset = document.getElementById("processing") as HTMLFieldSetElement;
-const progressBar = document.getElementById("progress") as HTMLProgressElement;
-const statusLine = document.getElementById("status-line") as HTMLElement;
+const pv = new ProgressVideo(document.getElementById("progress-video") as HTMLVideoElement);
 const frameLine = document.getElementById("frame-line") as HTMLDivElement;
 const timingLine = document.getElementById("timing-line") as HTMLDivElement;
 const errorLine = document.getElementById("error-line") as HTMLDivElement;
@@ -112,16 +112,13 @@ const rangeDetails = document.getElementById("video-range") as HTMLDetailsElemen
 const rangeLimitCheck = document.getElementById("range-limit-check") as HTMLInputElement;
 const rangePreviewCheck = document.getElementById("range-preview-check") as HTMLInputElement;
 const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
+const pipBtn = document.getElementById("pip-btn") as HTMLButtonElement;
 const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
 const profilePreviewCheck = document.getElementById("profile-preview-check") as HTMLInputElement;
 const gpuPasteCheck = document.getElementById("gpu-paste-check") as HTMLInputElement;
 const workerModeSelect = document.getElementById("worker-mode-select") as HTMLSelectElement;
 
 let lastOutputUrl: string | null = null;
-
-function setStatus(text: string): void {
-  statusLine.textContent = text;
-}
 
 function formatEta(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return "?";
@@ -484,8 +481,6 @@ swapBtn.addEventListener("click", async () => {
 
   disableForm();
   processingFieldset.style.display = "";
-  progressBar.value = 0;
-  statusLine.textContent = "";
   frameLine.textContent = "";
   timingLine.textContent = "";
   errorLine.textContent = "";
@@ -505,19 +500,35 @@ swapBtn.addEventListener("click", async () => {
   cancelBtn.textContent = "cancel";
   cancelBtn.style.display = "none";
   cancelBtn.addEventListener("click", onCancelClick);
+
+  pipBtn.style.display = "";
+  pipBtn.disabled = false;
+  const onPipClick = () => pv.enterPip();
+  pipBtn.addEventListener("click", onPipClick);
+
+  await pv.start("swapping faces");
   const swapStartTime = performance.now();
 
+  let wakeLock: WakeLockSentinel | null = null;
   try {
-    setStatus("loading face image...");
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    pv.setStatus("loading face image...");
     const faceImageData = faceInput.getImageData();
     if (!faceImageData) {
       throw new Error("failed to read face image");
     }
 
-    setStatus("loading models...");
+    pv.setStatus("loading models...");
     await session.loadModels(set, enhancerId, detectorId);
 
-    setStatus("extracting source embedding...");
+    pv.setStatus("extracting source embedding...");
     const sourceEmbedding = await session.extractEmbedding(faceImageData);
 
     const startTime = videoInput.getRangeStart();
@@ -525,7 +536,7 @@ swapBtn.addEventListener("click", async () => {
     const previewTime = videoInput.getPreviewTime();
 
     if (doPreview) {
-      setStatus(`previewing frame at ${previewTime.toFixed(1)}s...`);
+      pv.setStatus(`previewing frame at ${previewTime.toFixed(1)}s...`);
       const profiling = profilePreviewCheck.checked;
       if (profiling) {
         console.log("[profile] enabling WebGPU profiling for preview frame");
@@ -547,18 +558,18 @@ swapBtn.addEventListener("click", async () => {
         console.log(`[profile] preview frame swap wall time: ${previewMs.toFixed(1)} ms`);
       }
       showPreviewImage(previewResult);
-      setStatus("preview complete - waiting for confirmation");
+      pv.setStatus("preview complete - waiting for confirmation");
 
       const confirmed = await waitForConfirmation();
       if (!confirmed) {
-        setStatus("cancelled");
+        pv.setStatus("cancelled");
         return;
       }
     }
 
     // Clear preview before full processing
     outputDiv.innerHTML = "";
-    setStatus("encoding video...");
+    pv.setStatus("encoding video...");
     cancelBtn.style.display = "";
 
     // Rolling window for smoothing per-step timings
@@ -574,7 +585,10 @@ swapBtn.addEventListener("click", async () => {
       useXseg,
       scale,
       (stats) => {
-        progressBar.value = (stats.frameIndex / stats.totalFrames) * 100;
+        const pct = (stats.frameIndex / stats.totalFrames) * 100;
+        pv.setProgress(pct);
+        pv.setStats(`${stats.fps.toFixed(1)} fps | ~${formatEta(stats.etaSeconds)}`);
+        pv.setStatus(`frame ${stats.frameIndex}/${stats.totalFrames}`);
 
         timingWindow.push(stats.timings);
         if (timingWindow.length > windowSize) timingWindow.shift();
@@ -597,9 +611,8 @@ swapBtn.addEventListener("click", async () => {
         const n = timingWindow.length;
         for (const k of Object.keys(avg) as (keyof FrameTimings)[]) avg[k] /= n;
 
-        const pct = ((stats.frameIndex / stats.totalFrames) * 100).toFixed(0);
         frameLine.textContent =
-          `frame ${stats.frameIndex}/${stats.totalFrames} (${pct}%) | ` +
+          `frame ${stats.frameIndex}/${stats.totalFrames} (${pct.toFixed(0)}%) | ` +
           `${stats.fps.toFixed(1)} fps | ~${formatEta(stats.etaSeconds)} left`;
 
         const parts = [
@@ -615,17 +628,19 @@ swapBtn.addEventListener("click", async () => {
     );
 
     if (session.isAborted) {
-      setStatus("cancelled");
+      pv.setStatus("cancelled");
       return;
     }
 
-    setStatus("finalizing...");
+    pv.setStatus("finalizing...");
     if (lastOutputUrl) URL.revokeObjectURL(lastOutputUrl);
     const url = URL.createObjectURL(videoBlob);
     lastOutputUrl = url;
     const sizeMB = (videoBlob.size / 1024 / 1024).toFixed(1);
     const elapsedSec = (performance.now() - swapStartTime) / 1000;
-    setStatus(`done - ${sizeMB} MB - took ${formatEta(elapsedSec)}`);
+    pv.setProgress(100);
+    pv.setStats("");
+    pv.setStatus(`done - ${sizeMB} MB - took ${formatEta(elapsedSec)}`);
 
     const outputVideo = document.createElement("video");
     outputVideo.src = url;
@@ -644,8 +659,18 @@ swapBtn.addEventListener("click", async () => {
     console.error(err);
     errorLine.textContent = `ERROR: ${err}`;
   } finally {
+    pv.stop();
     cancelBtn.removeEventListener("click", onCancelClick);
     cancelBtn.style.display = "none";
+    pipBtn.removeEventListener("click", onPipClick);
+    pipBtn.style.display = "none";
+    if (wakeLock) {
+      try {
+        await wakeLock.release();
+      } catch {
+        // ignore
+      }
+    }
     try {
       await session.releaseModels();
     } catch (e) {

@@ -37,8 +37,6 @@ import type {
 import { SdxlDualTextEncoder } from "./text-encoders";
 import { SdxlUnet, SDXL_UNET_LATENT_CHANNELS, buildTimeIds } from "./unet";
 
-const FIXED_PHASE_UNITS = 4;
-
 function computeSchedulerSteps(steps: number, refStrength: number, hasRef: boolean): number {
   if (!hasRef || refStrength <= 0) return steps;
   return Math.max(steps, Math.ceil(steps / refStrength));
@@ -51,8 +49,7 @@ function estimate(input: GenerateInput): PipelineEstimate {
   const latentH = input.height / 8;
   const latentW = input.width / 8;
   const vaeTiles = vaeTileCount(latentH, latentW, input.tileVae);
-  const img2imgUnits = input.refImage ? 1 : 0;
-  const totalUnits = FIXED_PHASE_UNITS + img2imgUnits + input.steps + vaeTiles;
+  const totalUnits = input.steps + vaeTiles;
   return { totalUnits };
 }
 
@@ -96,7 +93,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   log(
     `[sdxl] tokenized: cond=${condIds.length}/${condIds2.length} uncond=${uncondIds.length}/${uncondIds2.length}`,
   );
-  cb.advance();
   cb.checkAborted();
 
   // ----- 2. Dual text encoder -----
@@ -121,7 +117,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   cb.status("releasing text encoders...");
   await dualTe.release();
   log("[sdxl] text encoders released");
-  cb.advance();
   cb.checkAborted();
 
   // ----- 3. UNet load -----
@@ -130,7 +125,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   const boundaryDtype = set.boundaryDtype ?? "float32";
   const unet = await SdxlUnet.load(cache, set.unet, { boundaryDtype });
   log(`[sdxl] UNet ORT session created in ${(performance.now() - tUnetLoad).toFixed(1)} ms`);
-  cb.advance();
   cb.checkAborted();
 
   const schedulerOpts = { numInferenceSteps: schedulerSteps, guidanceScale: cfg };
@@ -173,7 +167,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
       const noise = gaussianNoise(latentLen, rng);
       latent = scheduler.addNoise(cleanLatent, noise, tStart);
     }
-    cb.advance();
     cb.checkAborted();
   } else {
     latent = gaussianNoise(latentLen, rng);
@@ -198,7 +191,7 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
   for (let step = loopStart; step < schedulerSteps; step++) {
     const t = scheduler.timesteps[step];
     const stepDisplay = step - loopStart + 1;
-    cb.status(`denoising step ${stepDisplay} / ${totalLoopSteps} (t=${t})...`);
+    cb.status("denoising...");
     const tStep = performance.now();
 
     // Euler scheduler requires scaling the model input by 1/sqrt(sigma^2+1)
@@ -253,6 +246,7 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
     cb.stats(
       `step ${stepDisplay}/${totalLoopSteps} | ${formatMs(avgMs)} avg/step | ~${formatEta(etaSec)} left`,
     );
+    cb.stepProgress(stepDisplay, totalLoopSteps, etaSec);
     log(
       `  [sdxl] step ${stepDisplay} (${stepMs.toFixed(0)} ms): latent=${fmtStats(statsOf(latent))}`,
     );
@@ -274,7 +268,6 @@ async function run(input: GenerateInput, cb: GenerateCallbacks): Promise<ImageDa
     boundaryDtype: boundaryDtype,
   });
   log(`[sdxl] VAE decoder loaded in ${(performance.now() - tVaeLoad).toFixed(1)} ms`);
-  cb.advance();
   cb.checkAborted();
 
   const tDecode = performance.now();

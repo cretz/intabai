@@ -27,6 +27,7 @@ import {
   PersistedSettings as PersistedSettingsStore,
   isMobile,
 } from "../shared/persisted-settings";
+import { ProgressVideo } from "../shared/progress-video";
 import { initThemeSelect } from "../shared/theme";
 
 {
@@ -144,9 +145,8 @@ const tileVaeCheck = document.getElementById("tile-vae-check") as HTMLInputEleme
 const resetBtn = document.getElementById("reset-options-btn") as HTMLButtonElement;
 const generateBtn = document.getElementById("generate-btn") as HTMLButtonElement;
 const processingFieldset = document.getElementById("processing") as HTMLFieldSetElement;
-const progressBar = document.getElementById("progress") as HTMLProgressElement;
-const statusLine = document.getElementById("status-line") as HTMLElement;
-const statsLine = document.getElementById("stats-line") as HTMLElement;
+const pv = new ProgressVideo(document.getElementById("progress-video") as HTMLVideoElement);
+const pipBtn = document.getElementById("pip-btn") as HTMLButtonElement;
 const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
 const resultSection = document.getElementById("result-section") as HTMLFieldSetElement;
 const resultCanvas = document.getElementById("result-canvas") as HTMLCanvasElement;
@@ -372,11 +372,10 @@ function refreshRefImageUi(): void {
   }
   const supports = set.capabilities.img2img && !!set.img2img;
   if (!supports) {
-    refImageModelHelp.innerHTML = "<small>This model does not support reference images.</small>";
-    refImageInput.disabled = true;
-    refStrengthWrap.style.display = "none";
+    refImageSection.style.display = "none";
     return;
   }
+  refImageSection.style.display = "";
   refImageInput.disabled = false;
   const help = set.img2img!;
   refImageModelHelp.innerHTML = `<small><strong>${escapeHtml(set.name)}:</strong> ${escapeHtml(help.description)}</small>`;
@@ -442,19 +441,8 @@ generateBtn.addEventListener("click", async () => {
     tileVae: pm.tileVae,
   };
 
-  let pipeline: GenerateFn;
-  try {
-    pipeline = await resolvePipeline(set.family);
-  } catch (err) {
-    statusLine.textContent = (err as Error).message;
-    return;
-  }
-  const { totalUnits } = pipeline.estimate(input);
-
   generateBtn.disabled = true;
   processingFieldset.style.display = "block";
-  progressBar.value = 0;
-  statsLine.textContent = "";
 
   const debugEnabled = settings.debugLog;
   if (debugEnabled) {
@@ -484,37 +472,46 @@ generateBtn.addEventListener("click", async () => {
   }
   log(`pipeline=${set.family} model=${set.id}`);
 
-  // Tweened progress: between explicit advance() calls, ease the bar
-  // from the current unit toward the next using the prior unit's wall-
-  // clock duration as the estimate. Capped at 95% so completion still
-  // produces a visible snap.
+  // Start progress video before any awaits so the user gesture is still
+  // active (required for AudioContext.resume / video.play).
+  await pv.start("generating image", log);
+
+  let pipeline: GenerateFn;
+  try {
+    pipeline = await resolvePipeline(set.family);
+  } catch (err) {
+    console.error("[image-gen]", err);
+    pv.setStatus(`failed: ${(err as Error).message}`);
+    pv.stop();
+    refreshGenerateEnabled();
+    return;
+  }
+  const { totalUnits } = pipeline.estimate(input);
+
+  let currentPct = 0;
   let unitsDone = 0;
-  let lastUnitStart = performance.now();
-  let lastUnitDurationMs = 0;
-  let rafHandle = 0;
-  const tickProgress = () => {
-    const target = ((unitsDone + 1) / totalUnits) * 100;
-    const base = (unitsDone / totalUnits) * 100;
-    if (lastUnitDurationMs > 0) {
-      const frac = Math.min((performance.now() - lastUnitStart) / lastUnitDurationMs, 0.95);
-      progressBar.value = base + (target - base) * frac;
+
+  // Single gate for all progress updates. Never goes backwards.
+  const updateProgress = (pct: number) => {
+    if (pct > currentPct) {
+      currentPct = pct;
+      pv.setProgress(pct);
     }
-    rafHandle = requestAnimationFrame(tickProgress);
   };
   const advance = () => {
-    const now = performance.now();
-    lastUnitDurationMs = now - lastUnitStart;
-    lastUnitStart = now;
     unitsDone++;
-    progressBar.value = (unitsDone / totalUnits) * 100;
+    updateProgress((unitsDone / totalUnits) * 100);
   };
-  rafHandle = requestAnimationFrame(tickProgress);
 
   aborted = false;
   cancelBtn.disabled = false;
   cancelBtn.textContent = "cancel";
   cancelBtn.style.display = "";
   cancelBtn.addEventListener("click", onCancelClick);
+
+  pipBtn.style.display = "";
+  const onPipClick = () => pv.enterPip();
+  pipBtn.addEventListener("click", onPipClick);
 
   let wakeLock: WakeLockSentinel | null = null;
   try {
@@ -533,10 +530,15 @@ generateBtn.addEventListener("click", async () => {
   const cb: GenerateCallbacks = {
     log,
     status: (msg) => {
-      statusLine.textContent = msg;
+      pv.setStatus(msg);
     },
     stats: (msg) => {
-      statsLine.textContent = msg;
+      pv.setStats(msg);
+    },
+    stepProgress: (current, total, _etaSeconds) => {
+      const frac = total > 0 ? current / total : 0;
+      const denoiseShare = Math.min(total, totalUnits) / totalUnits;
+      updateProgress(frac * denoiseShare * 100);
     },
     advance,
     checkAborted: () => {
@@ -582,18 +584,22 @@ generateBtn.addEventListener("click", async () => {
 
     resultSection.style.display = "";
     const elapsedSec = (performance.now() - genStartMs) / 1000;
-    statusLine.textContent = `done in ${formatEta(elapsedSec)}`;
+    pv.setProgress(100);
+    pv.setStats("");
+    pv.setStatus(`done in ${formatEta(elapsedSec)}`);
   } catch (err) {
     if (err instanceof CancelledError) {
-      statusLine.textContent = "cancelled";
+      pv.setStatus("cancelled");
     } else {
-      statusLine.textContent = `failed: ${(err as Error).message}`;
+      pv.setStatus(`failed: ${(err as Error).message}`);
       console.error("[image-gen]", err);
     }
   } finally {
-    cancelAnimationFrame(rafHandle);
+    pv.stop();
     cancelBtn.removeEventListener("click", onCancelClick);
     cancelBtn.style.display = "none";
+    pipBtn.removeEventListener("click", onPipClick);
+    pipBtn.style.display = "none";
     if (wakeLock) {
       try {
         await wakeLock.release();
