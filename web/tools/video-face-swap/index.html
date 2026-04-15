@@ -181,13 +181,15 @@
       <details id="advanced-section" style="margin-top: 8px">
         <summary>advanced</summary>
         <div class="field" style="margin-top: 6px">
-          <input type="checkbox" id="profile-preview-check" />
+          <input type="checkbox" id="debug-check" />
           <span style="flex: 1">
-            <label for="profile-preview-check">profile preview image</label>
+            <label for="debug-check">debug</label>
             <small>
-              - dump per-kernel WebGPU timings to the browser console for the
-              single preview frame swap. requires "preview single frame" to be
-              on. no effect on full-video processing.
+              - verbose diagnostics in a log pane below the processing box
+              (file read, mp4 demux, decoder config, worker events) plus
+              per-kernel WebGPU timings dumped to the browser devtools
+              console for the single preview frame swap (requires "preview
+              single frame" to be on).
             </small>
           </span>
         </div>
@@ -211,7 +213,9 @@
               per-frame: worker holds the pipeline; main thread still extracts
               and muxes, sends each frame to the worker for processing.
               full: worker also extracts (mp4box + WebCodecs) and muxes -
-              main thread is essentially idle during processing.
+              main thread is essentially idle during processing. note: loads
+              the entire video file into memory (Android revokes picked-file
+              handles between calls, so we slurp once up front).
             </small>
             <select id="worker-mode-select">
               <option value="off">off</option>
@@ -241,6 +245,7 @@
         <button type="button" id="cancel-btn" style="display: none">cancel</button>
         <button type="button" id="pip-btn" style="display: none; margin-left: auto">PiP GPU keep alive</button>
       </div>
+      <textarea id="debug-log-pane" readonly style="display: none; width: 100%; height: 220px; margin-top: 8px; font-family: monospace; font-size: 11px; white-space: pre; overflow: auto"></textarea>
     </fieldset>
 
     <div id="output"></div>

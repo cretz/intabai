@@ -614,7 +614,7 @@ generateBtn.addEventListener("click", async () => {
 // Apply persisted settings before kicking off the model manager so the
 // initial model-select refresh sees the right preferred id.
 const saved = settingsStore.load();
-const initial: ImageGenSettings = { ...defaultGlobalSettings(), ...(saved ?? {}) };
+const initial: ImageGenSettings = { ...defaultGlobalSettings(), ...saved };
 applyGlobalSettings(initial);
 // Hand the saved model id to the manager BEFORE init so its first
 // refreshModelSelect prefers it directly.

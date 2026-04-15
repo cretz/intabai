@@ -1,6 +1,5 @@
 import noUiSlider, { type API as NoUiSliderAPI } from "nouislider";
 import "nouislider/dist/nouislider.css";
-import { probeAudioPassthrough } from "./audio-passthrough";
 
 export interface VideoRangeElements {
   details: HTMLDetailsElement;
@@ -25,7 +24,6 @@ export class VideoInput {
   private rangeEnd = 0;
   private file: File | null = null;
   private currentObjectUrl: string | null = null;
-  private audioStatus: string = "";
 
   constructor(
     private fileInput: HTMLInputElement,
@@ -70,7 +68,6 @@ export class VideoInput {
     const file = this.fileInput.files?.[0];
     if (!file) return;
     this.file = file;
-    this.audioStatus = "checking audio...";
     if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
     this.currentObjectUrl = URL.createObjectURL(file);
     this.video.src = this.currentObjectUrl;
@@ -86,25 +83,9 @@ export class VideoInput {
       this.onLoadCallback?.();
     };
 
-    // Probe audio in the background and update the status line when done.
-    // The probe streams just enough of the file to find the moov box.
-    probeAudioPassthrough(file)
-      .then((res) => {
-        if (this.file !== file) return; // a newer file was loaded
-        if (!res.hasAudio) {
-          this.audioStatus = "no audio track (output will be silent)";
-        } else if (res.unsupported) {
-          this.audioStatus = `audio: ${res.codecString ?? "unknown"} - cannot preserve, output will be silent`;
-        } else {
-          this.audioStatus = `audio: ${res.codecString} (will be preserved)`;
-        }
-        this.refreshStatus();
-      })
-      .catch((e) => {
-        if (this.file !== file) return;
-        this.audioStatus = `audio probe failed: ${e}`;
-        this.refreshStatus();
-      });
+    // Audio probing is deferred to swap time: on Android, the picked File's
+    // content-URI permission is fragile and each read risks burning it.
+    // demuxAudio runs inside processVideoLoop from a fresh read at swap time.
 
     this.video.onerror = () => {
       this.statusEl.textContent = "failed to load video";
@@ -288,9 +269,7 @@ export class VideoInput {
   private baseStatus = "";
 
   private refreshStatus(): void {
-    const parts = [this.baseStatus];
-    if (this.audioStatus) parts.push(this.audioStatus);
-    this.statusEl.textContent = parts.filter(Boolean).join(" | ");
+    this.statusEl.textContent = this.baseStatus;
     this.statusEl.style.display = "";
   }
 

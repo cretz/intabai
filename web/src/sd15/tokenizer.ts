@@ -65,7 +65,7 @@ function buildByteEncoder(): string[] {
       n++;
     }
   }
-  const out = new Array<string>(256);
+  const out = Array.from<string>({ length: 256 });
   for (let i = 0; i < bs.length; i++) {
     out[bs[i]] = String.fromCodePoint(cs[i]);
   }

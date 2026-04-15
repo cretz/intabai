@@ -351,10 +351,7 @@ export class Pipeline {
     }
 
     if (this.enhancerSessionId) {
-      t = performance.now();
-      const enhancedFaces = await this.detectFaces(result);
-      timings.detect += performance.now() - t;
-      for (const face of enhancedFaces) {
+      for (const face of faces) {
         const r = await this.enhanceFace(result, face);
         result = r.result;
         timings.landmarks += r.landmarks;
