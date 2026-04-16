@@ -30,6 +30,10 @@ import type { FrameProvider, ProvidedFrame } from "./frame-provider";
 
 const READ_CHUNK_SIZE = 1024 * 1024; // 1 MiB
 
+type LogFn = (msg: string) => void;
+
+const noopLog: LogFn = () => {};
+
 interface VideoTrackInfo {
   trackId: number;
   codec: string; // WebCodecs codec string, e.g. "avc1.64001f"
@@ -52,48 +56,40 @@ async function streamFileToMp4Box(
   file: Blob,
   mp4: ISOFile,
   shouldStop: () => boolean,
+  log: LogFn = noopLog,
 ): Promise<void> {
-  const reader = file.stream().getReader();
+  // Slice-based chunked read instead of file.stream().getReader().
+  // On Android Chrome the stream reader throws "TypeError: network error"
+  // on the very first read when the Blob was postMessage'd from main,
+  // but blob.slice(start, end).arrayBuffer() works fine (it's also the
+  // same API the sample-byte read path uses further down in frames()).
+  log(`streamFileToMp4Box: slice-reading blob.size=${file.size}`);
   let offset = 0;
-  let pending: Uint8Array[] = [];
-  let pendingBytes = 0;
-  const flush = (last: boolean) => {
-    if (pendingBytes === 0 && !last) return;
-    const merged = new Uint8Array(pendingBytes);
-    let p = 0;
-    for (const c of pending) {
-      merged.set(c, p);
-      p += c.length;
-    }
-    pending = [];
-    pendingBytes = 0;
-    const buf = MP4BoxBuffer.fromArrayBuffer(merged.buffer, offset);
-    offset += merged.length;
-    mp4.appendBuffer(buf, last);
-  };
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      pending.push(value);
-      pendingBytes += value.length;
-      if (pendingBytes >= READ_CHUNK_SIZE) {
-        flush(false);
-        if (shouldStop()) {
-          await reader.cancel();
-          return;
-        }
-      }
-    }
-    flush(true);
-    mp4.flush();
-  } finally {
+  let readCount = 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + READ_CHUNK_SIZE, file.size);
+    let buf: ArrayBuffer;
     try {
-      reader.releaseLock();
-    } catch {
-      // already released
+      buf = await file.slice(offset, end).arrayBuffer();
+    } catch (e) {
+      const err = e as Error;
+      log(
+        `streamFileToMp4Box: slice(${offset}, ${end}).arrayBuffer() threw - ${err.name}: ${err.message}`,
+      );
+      throw e;
+    }
+    readCount++;
+    const last = end >= file.size;
+    const mp4Buf = MP4BoxBuffer.fromArrayBuffer(buf, offset);
+    mp4.appendBuffer(mp4Buf, last);
+    offset = end;
+    if (!last && shouldStop()) {
+      log(`streamFileToMp4Box: shouldStop at offset=${offset} after ${readCount} reads`);
+      return;
     }
   }
+  log(`streamFileToMp4Box: EOF after ${readCount} reads, ${offset} bytes`);
+  mp4.flush();
 }
 
 /**
@@ -129,11 +125,12 @@ export class Mp4BoxFrameProvider implements FrameProvider {
   readonly fps: number;
 
   private constructor(
-    private readonly file: File,
+    private readonly file: Blob,
     private readonly track: VideoTrackInfo,
     private readonly samples: KeptSample[],
     width: number,
     height: number,
+    private readonly log: LogFn,
   ) {
     this.width = width;
     this.height = height;
@@ -144,7 +141,11 @@ export class Mp4BoxFrameProvider implements FrameProvider {
    * Parse the moov, build the sample table, and return a ready-to-iterate
    * provider. Does not start decoding - that happens lazily in frames().
    */
-  static async create(file: File, scale: number): Promise<Mp4BoxFrameProvider> {
+  static async create(
+    file: Blob,
+    scale: number,
+    log: LogFn = noopLog,
+  ): Promise<Mp4BoxFrameProvider> {
     const mp4 = createFile(false);
     let info: VideoTrackInfo | null = null;
     let allSamples: KeptSample[] = [];
@@ -202,7 +203,7 @@ export class Mp4BoxFrameProvider implements FrameProvider {
     };
 
     try {
-      await streamFileToMp4Box(file, mp4, () => ready);
+      await streamFileToMp4Box(file, mp4, () => ready, log);
     } catch (e) {
       throw new Error(`mp4 demux read error: ${e}`);
     }
@@ -213,7 +214,26 @@ export class Mp4BoxFrameProvider implements FrameProvider {
     // H.264 requires even dimensions
     const width = Math.round((trackInfo.srcWidth * scale) / 2) * 2;
     const height = Math.round((trackInfo.srcHeight * scale) / 2) * 2;
-    return new Mp4BoxFrameProvider(file, trackInfo, allSamples, width, height);
+    log(
+      `Mp4BoxFrameProvider: ready codec=${trackInfo.codec} src=${trackInfo.srcWidth}x${trackInfo.srcHeight} out=${width}x${height} fps=${trackInfo.fps.toFixed(2)} samples=${allSamples.length}`,
+    );
+    return new Mp4BoxFrameProvider(file, trackInfo, allSamples, width, height, log);
+  }
+
+  /**
+   * Decode and return a single frame at or after `time`. Used for the preview
+   * path, where we want "the frame the user is asking to see" rather than "any
+   * frames in a tight window" - the latter is fragile because the first decoded
+   * frame's timestamp can be shifted by an edit list or B-frame reordering.
+   */
+  async decodeFrameAt(time: number): Promise<ImageData> {
+    // 2s lookahead covers edit-list shifts and B-frame reordering with
+    // plenty of slack, while bounding the mdat slice we coalesce into
+    // memory - frames() reads the entire window's bytes at once.
+    for await (const f of this.frames(time, time + 2)) {
+      return f.image;
+    }
+    throw new Error(`decodeFrameAt(${time}): no frame produced`);
   }
 
   async *frames(startTime: number, endTime: number): AsyncGenerator<ProvidedFrame> {
@@ -236,6 +256,9 @@ export class Mp4BoxFrameProvider implements FrameProvider {
       }
     }
     const window = samples.slice(firstIdx, lastIdx + 1);
+    this.log(
+      `frames: start=${startTime.toFixed(3)}s end=${endTime.toFixed(3)}s firstIdx=${firstIdx} lastIdx=${lastIdx} window=${window.length} fps=${this.fps.toFixed(2)}`,
+    );
     if (window.length === 0) return;
 
     // Coalesced read: one slice covering all sample bytes in the window.
@@ -243,6 +266,7 @@ export class Mp4BoxFrameProvider implements FrameProvider {
     // one big read of (window_duration * bitrate / 8) bytes.
     const byteStart = window[0].offset;
     const byteEnd = window[window.length - 1].offset + window[window.length - 1].size;
+    this.log(`frames: slice bytes=${byteStart}..${byteEnd} (${byteEnd - byteStart}B)`);
     const blob = await this.file.slice(byteStart, byteEnd).arrayBuffer();
     const mdat = new Uint8Array(blob);
 
@@ -258,8 +282,15 @@ export class Mp4BoxFrameProvider implements FrameProvider {
       if (w) w();
     };
 
+    let outputCount = 0;
+    let firstOutputTs: number | null = null;
     const decoder = new VideoDecoder({
       output: (vf) => {
+        outputCount++;
+        if (firstOutputTs === null) {
+          firstOutputTs = vf.timestamp;
+          this.log(`decoder: first output ts=${vf.timestamp}us`);
+        }
         // If the consumer has already stopped iterating, don't queue
         // the frame - just close it immediately to avoid the leak.
         if (stopped) {
@@ -270,15 +301,24 @@ export class Mp4BoxFrameProvider implements FrameProvider {
         wake();
       },
       error: (e) => {
-        decoderError = e instanceof Error ? e : new Error(String(e));
+        const err = e instanceof Error ? e : new Error(String(e));
+        this.log(`decoder.error: ${err.name}: ${err.message}`);
+        decoderError = err;
         wake();
       },
     });
-    decoder.configure({
-      codec: this.track.codec,
-      description: this.track.description,
-      optimizeForLatency: false,
-    });
+    try {
+      decoder.configure({
+        codec: this.track.codec,
+        description: this.track.description,
+        optimizeForLatency: false,
+      });
+      this.log(`decoder.configure ok codec=${this.track.codec}`);
+    } catch (e) {
+      const err = e as Error;
+      this.log(`decoder.configure threw: ${err.name}: ${err.message}`);
+      throw e;
+    }
 
     const totalRangeFrames = Math.ceil((endTime - startTime) * this.fps);
     const canvas = new OffscreenCanvas(this.width, this.height);
@@ -308,7 +348,9 @@ export class Mp4BoxFrameProvider implements FrameProvider {
             }),
           );
         }
+        this.log(`feed: decoded samples=${window.length}, flushing...`);
         await decoder.flush();
+        this.log(`feed: flush complete, outputCount=${outputCount}, queue=${queue.length}`);
       } finally {
         wake();
       }

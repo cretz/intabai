@@ -30,8 +30,10 @@ export class WorkerHost {
   private nextId = 1;
   private pending = new Map<number, PendingCall>();
   private aborted = false;
+  private log: (msg: string) => void;
 
-  constructor() {
+  constructor(log: (msg: string) => void) {
+    this.log = log;
     this.worker = new Worker(new URL("./pipeline-worker.ts", import.meta.url), {
       type: "module",
     });
@@ -43,6 +45,10 @@ export class WorkerHost {
         return;
       }
       if (msg.type === "event") {
+        if (msg.kind === "debug-log") {
+          this.log("[worker] " + msg.msg);
+          return;
+        }
         pending.onEvent?.(msg);
         return;
       }
@@ -85,8 +91,8 @@ export class WorkerHost {
     });
   }
 
-  async init(useGpuPaste: boolean): Promise<void> {
-    await this.call<null>({ type: "init", useGpuPaste });
+  async init(useGpuPaste: boolean, debug: boolean): Promise<void> {
+    await this.call<null>({ type: "init", useGpuPaste, debug });
   }
 
   async loadModels(
@@ -136,7 +142,7 @@ export class WorkerHost {
 
   /** Full-worker preview: decode + swap one frame entirely in the worker. */
   async previewFrame(
-    file: File,
+    file: Blob,
     time: number,
     scale: number,
     sourceEmbedding: Float32Array,
@@ -160,7 +166,7 @@ export class WorkerHost {
 
   /** Full-worker run: extract + process + encode + mux entirely in the worker. */
   async processVideo(
-    file: File,
+    file: Blob,
     sourceEmbedding: Float32Array,
     startTime: number,
     endTime: number,

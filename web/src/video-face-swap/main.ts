@@ -32,7 +32,7 @@ interface PersistedSettings {
   separatePreview: boolean;
   rangePanelOpen: boolean;
   advancedPanelOpen: boolean;
-  profilePreview: boolean;
+  debug: boolean;
   gpuPaste: boolean;
   workerMode: WorkerMode;
 }
@@ -53,7 +53,7 @@ function getMobileDefaults(): Partial<PersistedSettings> {
     separatePreview: false,
     rangePanelOpen: false,
     advancedPanelOpen: false,
-    profilePreview: false,
+    debug: false,
     gpuPaste: true,
   };
 }
@@ -114,7 +114,8 @@ const rangePreviewCheck = document.getElementById("range-preview-check") as HTML
 const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
 const pipBtn = document.getElementById("pip-btn") as HTMLButtonElement;
 const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
-const profilePreviewCheck = document.getElementById("profile-preview-check") as HTMLInputElement;
+const debugCheck = document.getElementById("debug-check") as HTMLInputElement;
+const debugLogPane = document.getElementById("debug-log-pane") as HTMLTextAreaElement;
 const gpuPasteCheck = document.getElementById("gpu-paste-check") as HTMLInputElement;
 const workerModeSelect = document.getElementById("worker-mode-select") as HTMLSelectElement;
 
@@ -292,7 +293,7 @@ function captureCurrentSettings(): PersistedSettings {
     separatePreview: rangePreviewCheck.checked,
     rangePanelOpen: rangeDetails.open,
     advancedPanelOpen: advancedSection.open,
-    profilePreview: profilePreviewCheck.checked,
+    debug: debugCheck.checked,
     gpuPaste: gpuPasteCheck.checked,
     workerMode: workerModeSelect.value as WorkerMode,
   };
@@ -328,7 +329,7 @@ function applySettings(s: Partial<PersistedSettings>): void {
   if (s.separatePreview !== undefined) rangePreviewCheck.checked = s.separatePreview;
   if (s.rangePanelOpen !== undefined) rangeDetails.open = s.rangePanelOpen;
   if (s.advancedPanelOpen !== undefined) advancedSection.open = s.advancedPanelOpen;
-  if (s.profilePreview !== undefined) profilePreviewCheck.checked = s.profilePreview;
+  if (s.debug !== undefined) debugCheck.checked = s.debug;
   if (s.gpuPaste !== undefined) gpuPasteCheck.checked = s.gpuPaste;
   if (s.workerMode !== undefined) {
     const opt = Array.from(workerModeSelect.options).find((o) => o.value === s.workerMode);
@@ -378,7 +379,7 @@ function wireSettingsPersistence(): void {
   rangePreviewCheck.addEventListener("change", onChange);
   rangeDetails.addEventListener("toggle", onChange);
   advancedSection.addEventListener("toggle", onChange);
-  profilePreviewCheck.addEventListener("change", onChange);
+  debugCheck.addEventListener("change", onChange);
   gpuPasteCheck.addEventListener("change", onChange);
   workerModeSelect.addEventListener("change", onChange);
 
@@ -400,7 +401,7 @@ function wireSettingsPersistence(): void {
       rangePreviewCheck.checked = false;
       rangeDetails.open = false;
       advancedSection.open = false;
-      profilePreviewCheck.checked = false;
+      debugCheck.checked = false;
       gpuPasteCheck.checked = false;
       workerModeSelect.value = "off";
       pendingDownscaleHeight = "1080";
@@ -486,7 +487,27 @@ swapBtn.addEventListener("click", async () => {
   errorLine.textContent = "";
   outputDiv.innerHTML = "";
 
-  const session = createSession(workerModeSelect.value as WorkerMode, gpuPasteCheck.checked);
+  const debugEnabled = debugCheck.checked;
+  if (debugEnabled) {
+    debugLogPane.value = "";
+    debugLogPane.style.display = "block";
+  } else {
+    debugLogPane.style.display = "none";
+  }
+  const log: (msg: string) => void = debugEnabled
+    ? (msg: string) => {
+        console.log("[video-face-swap] " + msg);
+        debugLogPane.value += msg + "\n";
+        debugLogPane.scrollTop = debugLogPane.scrollHeight;
+      }
+    : () => {};
+
+  const session = createSession(
+    workerModeSelect.value as WorkerMode,
+    gpuPasteCheck.checked,
+    debugEnabled,
+    log,
+  );
   const sourceFile = videoInput.getFile();
   const onCancelClick = () => {
     session.abort();
@@ -537,13 +558,17 @@ swapBtn.addEventListener("click", async () => {
 
     if (doPreview) {
       pv.setStatus(`previewing frame at ${previewTime.toFixed(1)}s...`);
-      const profiling = profilePreviewCheck.checked;
-      if (profiling) {
-        console.log("[profile] enabling WebGPU profiling for preview frame");
+      if (debugEnabled) {
+        log(
+          "enabling WebGPU profiling for preview frame (per-kernel timings go to devtools console only)",
+        );
         (ort.env.webgpu as { profiling?: { mode: string } }).profiling = { mode: "default" };
       }
       const tPreview = performance.now();
       if (!sourceFile) throw new Error("source video file unavailable");
+      log(
+        `previewFrame t=${previewTime.toFixed(2)}s scale=${scale} file.size=${sourceFile.size} type=${sourceFile.type || "?"}`,
+      );
       const previewResult = await session.previewFrame(
         video,
         sourceFile,
@@ -553,9 +578,9 @@ swapBtn.addEventListener("click", async () => {
         useXseg,
       );
       const previewMs = performance.now() - tPreview;
-      if (profiling) {
+      if (debugEnabled) {
         (ort.env.webgpu as { profiling?: { mode: string } }).profiling = { mode: "off" };
-        console.log(`[profile] preview frame swap wall time: ${previewMs.toFixed(1)} ms`);
+        log(`preview frame swap wall time: ${previewMs.toFixed(1)} ms`);
       }
       showPreviewImage(previewResult);
       pv.setStatus("preview complete - waiting for confirmation");

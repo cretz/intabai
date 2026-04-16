@@ -15,6 +15,8 @@ import { HtmlVideoFrameProvider } from "./html-video-frame-provider";
 import { processVideoLoop } from "./process-video-loop";
 export type WorkerMode = "off" | "perFrame" | "full";
 
+export type LogFn = (msg: string) => void;
+
 export interface Session {
   loadModels(set: ModelSet, enhancerId: string | null, detectorId: DetectorId): Promise<void>;
   extractEmbedding(image: ImageData): Promise<Float32Array>;
@@ -104,9 +106,9 @@ class InprocSession implements Session {
 class PerFrameWorkerSession implements Session {
   private host: WorkerHost;
   private initPromise: Promise<void>;
-  constructor(useGpuPaste: boolean) {
-    this.host = new WorkerHost();
-    this.initPromise = this.host.init(useGpuPaste);
+  constructor(useGpuPaste: boolean, debug: boolean, log: LogFn) {
+    this.host = new WorkerHost(log);
+    this.initPromise = this.host.init(useGpuPaste, debug);
   }
   async loadModels(set: ModelSet, enhancerId: string | null, detectorId: DetectorId) {
     await this.initPromise;
@@ -173,9 +175,33 @@ class PerFrameWorkerSession implements Session {
 class FullWorkerSession implements Session {
   private host: WorkerHost;
   private initPromise: Promise<void>;
-  constructor(useGpuPaste: boolean) {
-    this.host = new WorkerHost();
-    this.initPromise = this.host.init(useGpuPaste);
+  private log: LogFn;
+  // Slurp the picked File into an in-memory Blob once, on the main thread,
+  // before any worker call. Android Chrome revokes content-URI handles
+  // aggressively, so a File that read fine during preview can throw
+  // NotReadableError by the time we process. Reading bytes up front while
+  // the handle is still live moves the whole file into main-thread memory
+  // and insulates subsequent worker calls from revocation.
+  private slurped: { file: File; blob: Promise<Blob> } | null = null;
+  constructor(useGpuPaste: boolean, debug: boolean, log: LogFn) {
+    this.log = log;
+    this.host = new WorkerHost(log);
+    this.initPromise = this.host.init(useGpuPaste, debug);
+  }
+  private materialize(file: File): Promise<Blob> {
+    if (this.slurped && this.slurped.file === file) return this.slurped.blob;
+    const blob = (async () => {
+      this.log(`slurping file.size=${file.size} type=${file.type || "?"} into memory`);
+      const t = performance.now();
+      const buf = await file.arrayBuffer();
+      this.log(`slurp complete in ${(performance.now() - t).toFixed(0)}ms`);
+      return new Blob([buf], { type: file.type });
+    })().catch((err) => {
+      if (this.slurped?.file === file) this.slurped = null;
+      throw err;
+    });
+    this.slurped = { file, blob };
+    return blob;
   }
   async loadModels(set: ModelSet, enhancerId: string | null, detectorId: DetectorId) {
     await this.initPromise;
@@ -184,7 +210,7 @@ class FullWorkerSession implements Session {
   extractEmbedding(image: ImageData) {
     return this.host.extractEmbedding(image);
   }
-  previewFrame(
+  async previewFrame(
     _video: HTMLVideoElement,
     file: File,
     time: number,
@@ -192,9 +218,10 @@ class FullWorkerSession implements Session {
     sourceEmbedding: Float32Array,
     useXseg: boolean,
   ) {
-    return this.host.previewFrame(file, time, scale, sourceEmbedding, useXseg);
+    const blob = await this.materialize(file);
+    return this.host.previewFrame(blob, time, scale, sourceEmbedding, useXseg);
   }
-  processVideo(
+  async processVideo(
     _video: HTMLVideoElement,
     file: File | null,
     sourceEmbedding: Float32Array,
@@ -205,8 +232,9 @@ class FullWorkerSession implements Session {
     onStats: (stats: FrameStats) => void,
   ) {
     if (!file) throw new Error("full worker mode requires a source file");
+    const blob = await this.materialize(file);
     return this.host.processVideo(
-      file,
+      blob,
       sourceEmbedding,
       startTime,
       endTime,
@@ -229,13 +257,18 @@ class FullWorkerSession implements Session {
   }
 }
 
-export function createSession(mode: WorkerMode, useGpuPaste: boolean): Session {
+export function createSession(
+  mode: WorkerMode,
+  useGpuPaste: boolean,
+  debug: boolean,
+  log: LogFn,
+): Session {
   switch (mode) {
     case "off":
       return new InprocSession(useGpuPaste);
     case "perFrame":
-      return new PerFrameWorkerSession(useGpuPaste);
+      return new PerFrameWorkerSession(useGpuPaste, debug, log);
     case "full":
-      return new FullWorkerSession(useGpuPaste);
+      return new FullWorkerSession(useGpuPaste, debug, log);
   }
 }

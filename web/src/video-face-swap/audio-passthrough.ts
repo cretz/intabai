@@ -188,7 +188,7 @@ interface SampleTableEntry {
  * Returns null if there is no audio track or the codec is unsupported.
  */
 export async function demuxAudio(
-  file: File,
+  file: Blob,
   startTime: number = 0,
   endTime: number = Infinity,
 ): Promise<AudioPassthroughResult | null> {
@@ -285,7 +285,7 @@ export async function demuxAudio(
  * slice + arrayBuffer call per run.
  */
 async function readSampleBytes(
-  file: File,
+  file: Blob,
   entries: SampleTableEntry[],
   timescale: number,
 ): Promise<AudioSample[]> {

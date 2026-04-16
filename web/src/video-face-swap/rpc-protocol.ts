@@ -44,6 +44,7 @@ export function unpackF32(p: PackedF32): Float32Array {
 export interface RpcInit {
   type: "init";
   useGpuPaste: boolean;
+  debug: boolean;
 }
 
 export interface RpcLoadModels {
@@ -71,7 +72,12 @@ export interface RpcProcessFrame {
 
 export interface RpcPreviewFrame {
   type: "previewFrame";
-  file: File;
+  // Main thread materializes the picked File into an in-memory Blob before
+  // postMessage. Android Chrome revokes content-URI handles aggressively;
+  // a File reference that worked moments ago can throw NotReadableError on
+  // a later read. Slurping on main while the handle is still live insulates
+  // the worker from revocation.
+  file: Blob;
   time: number;
   scale: number;
   sourceEmbedding: PackedF32;
@@ -80,7 +86,7 @@ export interface RpcPreviewFrame {
 
 export interface RpcProcessVideo {
   type: "processVideo";
-  file: File;
+  file: Blob;
   sourceEmbedding: PackedF32;
   startTime: number;
   endTime: number;
@@ -132,4 +138,11 @@ export interface RpcStatsEvent {
   stats: FrameStats;
 }
 
-export type RpcResponse = RpcOk | RpcError | RpcStatsEvent;
+export interface RpcDebugLogEvent {
+  id: number;
+  type: "event";
+  kind: "debug-log";
+  msg: string;
+}
+
+export type RpcResponse = RpcOk | RpcError | RpcStatsEvent | RpcDebugLogEvent;

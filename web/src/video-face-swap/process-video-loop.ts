@@ -27,7 +27,7 @@ export interface ProcessVideoOptions {
   provider: FrameProvider;
   processFrame: ProcessFrameFn;
   /** Source mp4 file for audio passthrough; null = no audio in output. */
-  audioFile: File | null;
+  audioFile: Blob | null;
   startTime: number;
   endTime: number;
   onStats: (stats: FrameStats) => void;

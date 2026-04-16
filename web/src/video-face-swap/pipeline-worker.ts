@@ -63,6 +63,7 @@ import {
 declare const self: DedicatedWorkerGlobalScope;
 
 let pipeline: Pipeline | null = null;
+let debugEnabled = false;
 
 function reply(id: number, result: unknown, transfer: Transferable[] = []): void {
   const msg: RpcResponse = { id, type: "ok", result };
@@ -74,12 +75,22 @@ function replyError(id: number, err: unknown): void {
   self.postMessage(msg);
 }
 
+function makeLog(id: number): (msg: string) => void {
+  return (msg: string) => {
+    if (!debugEnabled) return;
+    console.log("[video-face-swap worker] " + msg);
+    const ev: RpcResponse = { id, type: "event", kind: "debug-log", msg };
+    self.postMessage(ev);
+  };
+}
+
 async function handle(req: RpcRequest): Promise<void> {
   const { id, body } = req;
   try {
     switch (body.type) {
       case "init": {
         pipeline = new Pipeline(body.useGpuPaste);
+        debugEnabled = body.debug;
         reply(id, null);
         return;
       }
@@ -115,19 +126,17 @@ async function handle(req: RpcRequest): Promise<void> {
       case "previewFrame": {
         if (!pipeline) throw new Error("worker not initialized");
         const sourceEmbedding = unpackF32(body.sourceEmbedding);
-        const provider = await Mp4BoxFrameProvider.create(body.file, body.scale);
+        const log = makeLog(id);
+        log(
+          `previewFrame begin file.size=${body.file.size} file.type=${body.file.type || "?"} time=${body.time.toFixed(2)}s scale=${body.scale}`,
+        );
+        const provider = await Mp4BoxFrameProvider.create(body.file, body.scale, log);
         try {
-          // Decode just the single frame at the requested time. We give it
-          // a tiny window so the iterator yields exactly one frame, then
-          // run it through the pipeline.
-          const frameDur = 1 / provider.fps;
-          for await (const f of provider.frames(body.time, body.time + frameDur)) {
-            const swapped = await pipeline.swapFrame(f.image, sourceEmbedding, body.useXseg);
-            const packed = packImage(swapped);
-            reply(id, packed, [packed.buffer]);
-            return;
-          }
-          throw new Error("preview: no frame decoded at requested time");
+          const image = await provider.decodeFrameAt(body.time);
+          const swapped = await pipeline.swapFrame(image, sourceEmbedding, body.useXseg);
+          const packed = packImage(swapped);
+          reply(id, packed, [packed.buffer]);
+          return;
         } finally {
           provider.dispose();
         }
@@ -136,7 +145,11 @@ async function handle(req: RpcRequest): Promise<void> {
         if (!pipeline) throw new Error("worker not initialized");
         pipeline.resetAbort();
         const sourceEmbedding = unpackF32(body.sourceEmbedding);
-        const provider = await Mp4BoxFrameProvider.create(body.file, body.scale);
+        const log = makeLog(id);
+        log(
+          `processVideo begin file.size=${body.file.size} file.type=${body.file.type || "?"} range=${body.startTime.toFixed(2)}-${body.endTime.toFixed(2)}s scale=${body.scale}`,
+        );
+        const provider = await Mp4BoxFrameProvider.create(body.file, body.scale, log);
         try {
           const blob = await processVideoLoop({
             provider,
