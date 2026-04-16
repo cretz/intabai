@@ -1,5 +1,8 @@
 import { defineConfig } from "vite";
 import { resolve } from "path";
+import { existsSync, statSync, createReadStream } from "fs";
+
+const localModelsDir = resolve(import.meta.dirname, "../../notes/models");
 
 export default defineConfig({
   root: ".",
@@ -8,7 +11,31 @@ export default defineConfig({
     headers: { "Access-Control-Allow-Origin": "*" },
     hmr: false,
     ws: false,
+    fs: {
+      allow: [
+        ".",
+        ...(existsSync(localModelsDir) ? [localModelsDir] : []),
+      ],
+    },
   },
+  plugins: [
+    {
+      name: "local-model-proxy",
+      configureServer(server) {
+        server.middlewares.use("/local-models/fastwan", (req, res, next) => {
+          if (!req.url) return next();
+          const filePath = resolve(localModelsDir, "fastwan/hf-repo", req.url.replace(/^\//, ""));
+          if (!filePath.startsWith(localModelsDir)) return next();
+          if (!existsSync(filePath)) return next();
+          const stat = statSync(filePath);
+          res.setHeader("Content-Length", stat.size);
+          res.setHeader("Content-Type", "application/octet-stream");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          createReadStream(filePath).pipe(res);
+        });
+      },
+    },
+  ],
   build: {
     outDir: "dist",
     rollupOptions: {

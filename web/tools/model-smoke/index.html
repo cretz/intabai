@@ -66,6 +66,17 @@
     </fieldset>
 
     <fieldset>
+      <legend>output preview</legend>
+      <small>
+        - Rendered when a candidate sets <code>renderOutput</code> on its
+        dummy run (e.g. fastwan-vae-noise). Empty otherwise.
+      </small>
+      <div style="margin-top: 6px">
+        <canvas id="smoke-output-canvas" style="max-width: 100%; border: 1px solid"></canvas>
+      </div>
+    </fieldset>
+
+    <fieldset>
       <legend>log (copy/paste this back)</legend>
       <textarea
         id="log"

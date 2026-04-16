@@ -229,6 +229,7 @@ dependencies = [
     { name = "onnxruntime" },
     { name = "onnxscript" },
     { name = "optimum", extra = ["onnxruntime"] },
+    { name = "psutil" },
     { name = "torch", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine != 's390x' and sys_platform == 'darwin'" },
     { name = "torch", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 's390x' or sys_platform != 'darwin'" },
     { name = "transformers" },
@@ -243,6 +244,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.24" },
     { name = "onnxscript", specifier = ">=0.6" },
     { name = "optimum", extras = ["onnxruntime"] },
+    { name = "psutil" },
     { name = "torch", specifier = ">=2.11" },
     { name = "transformers", specifier = ">=4.57" },
 ]

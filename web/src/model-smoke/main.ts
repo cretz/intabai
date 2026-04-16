@@ -10,6 +10,8 @@ import * as ort from "onnxruntime-web";
 
 import { ModelCache, type ModelFile } from "../shared/model-cache";
 import { initThemeSelect } from "../shared/theme";
+import { gaussianNoise, mulberry32 } from "../image-gen/generate-utils";
+import { f16BitsToF32, f32ToF16Array } from "../sd15/fp16";
 
 {
   const sel = document.getElementById("theme-select");
@@ -45,9 +47,46 @@ interface Component {
      *  float16 (matches fp16 amuse exports); set `dtype: "float32"` for
      *  stock optimum/diffusers exports that didn't fp16-cast. Timestep is
      *  probed: starts with the requested float dtype, falls back to int64
-     *  on a dtype error from session.run. */
+     *  on a dtype error from session.run.
+     *  Per-input `dtype` overrides the component default - use when a single
+     *  graph mixes float16 + float32 (e.g. fp32 RoPE frequencies) or needs
+     *  int64 scalar inputs (e.g. unpatchify size args).
+     *  Empty `shape: []` is supported for scalar inputs. */
     dtype?: "float16" | "float32";
-    inputs: Array<{ match: string[]; shape: number[] }>;
+    inputs: Array<{
+      match: string[];
+      shape: number[];
+      dtype?: "float16" | "float32" | "int64" | "int32";
+      /** Uniform fill value for every element. Defaults to 0. Use for scalar
+       *  size/dim inputs that must be non-zero for downstream ops (e.g. the
+       *  patch-space dims passed to an unpatchify reshape). */
+      fill?: number;
+      /** If true, fill with seeded Gaussian noise instead of zeros. For
+       *  fp16/fp32 inputs only. Use when zeros collapse the op semantically
+       *  (e.g. VAE decoding zero latent yields a gray frame with no useful
+       *  signal about whether the decoder is working). */
+      gaussian?: boolean;
+    }>;
+    /** If set, render one frame of the first matching output to the
+     *  #smoke-output-canvas. Shape assumption: [B, F, C, H, W] fp16 (NTCHW),
+     *  F and C read from the spec below. Use to visually confirm a VAE is
+     *  actually producing a picture vs just returning near-zero. */
+    renderOutput?: {
+      /** Name substring of the output tensor; first match wins. */
+      match: string[];
+      /** Frame count (F). */
+      numFrames: number;
+      /** Channel count - must be 3 for RGB rendering. */
+      channels: number;
+      /** Height. */
+      height: number;
+      /** Width. */
+      width: number;
+      /** Which frame index to render (default 0). */
+      frameIndex?: number;
+      /** Pixel range the tensor lives in: [-1, 1] (default) or [0, 1]. */
+      pixelRange?: "-1to1" | "0to1";
+    };
     /**
      * If > 1, run session.run() this many times in a row and log each
      * timing separately. The first call always pays for WebGPU shader
@@ -75,6 +114,7 @@ const HF_WEBNN_SDXL = "https://huggingface.co/webnn/sdxl-turbo/resolve/main";
 const HF_ORT_SD_TURBO = "https://huggingface.co/onnxruntime/sd-turbo/resolve/main";
 const HF_JANUS = "https://huggingface.co/onnx-community/Janus-Pro-1B-ONNX/resolve/main";
 const HF_NITRO_E = "https://huggingface.co/TensorStack/Nitro-E-onnx/resolve/main";
+const LOCAL_FASTWAN = "/local-models/fastwan";
 
 function f(prefix: string, base: string, rel: string, approxBytes: number): ModelFile {
   return {
@@ -483,6 +523,281 @@ const CANDIDATES: Candidate[] = [
       },
     ],
   },
+  {
+    id: "fastwan-vae",
+    label: "FastWan 2.2 LightTAE VAE decoder (local, 36.6 MB)",
+    components: [
+      {
+        name: "vae_decoder (LightTAE)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae_decoder.onnx", 36.6 * 1024 * 1024),
+        dummyRun: {
+          dtype: "float16",
+          inputs: [{ match: ["latents"], shape: [1, 21, 48, 30, 52] }],
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-vae-noise",
+    label:
+      "FastWan 2.2 LightTAE VAE decoder: pure Gaussian-noise input, renders frame 0",
+    components: [
+      {
+        name: "vae_decoder + noise (diagnoses gray-output complaint from full pipeline)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae_decoder.onnx", 36.6 * 1024 * 1024),
+        dummyRun: {
+          dtype: "float16",
+          inputs: [
+            {
+              match: ["latents"],
+              shape: [1, 21, 48, 30, 52],
+              gaussian: true,
+            },
+          ],
+          renderOutput: {
+            match: ["frames"],
+            numFrames: 81,
+            channels: 3,
+            height: 480,
+            width: 832,
+            frameIndex: 0,
+            pixelRange: "-1to1",
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-transformer",
+    label: "FastWan 2.2 transformer per-block (local, shell_pre + block_00 + shell_post)",
+    components: [
+      // Smoke uses trace-tiny shapes (1 latent frame, 4x4 spatial = 4 tokens,
+      // 64 text tokens) to confirm op coverage without allocating the full
+      // 8190-token attention. Full-scale attention memory is a separate risk
+      // tracked in the worklog.
+      {
+        name: "shell_pre (patch embed + RoPE + condition embed, 179.7 MB)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/shell_pre.onnx", 179.7 * 1024 * 1024),
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 48, 1, 4, 4], dtype: "float16" },
+            { match: ["timestep"], shape: [1, 4], dtype: "int64" },
+            { match: ["encoder_hidden_states"], shape: [1, 64, 4096], dtype: "float16" },
+          ],
+        },
+      },
+      {
+        name: "block_00 (one of 30 transformer blocks, 327.5 MB)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/block_00.onnx", 327.5 * 1024 * 1024),
+        dummyRun: {
+          // freqs_cos/sin are fp32 (RoPE computes in fp32 for precision);
+          // everything else fp16 matches the diffusers trace dtype.
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 4, 3072], dtype: "float16" },
+            { match: ["encoder_hidden_states"], shape: [1, 64, 3072], dtype: "float16" },
+            { match: ["timestep_proj"], shape: [1, 4, 6, 3072], dtype: "float16" },
+            { match: ["freqs_cos"], shape: [1, 4, 1, 128], dtype: "float32" },
+            { match: ["freqs_sin"], shape: [1, 4, 1, 128], dtype: "float32" },
+          ],
+        },
+      },
+      {
+        name: "shell_post (final norm + proj + unpatchify, 1.2 MB)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/shell_post.onnx", 1.2 * 1024 * 1024),
+        dummyRun: {
+          // ppf/pph/ppw are scalar int64 size args passed through to the
+          // unpatchify reshape (they correspond to the runtime's latent dims).
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 4, 3072], dtype: "float16" },
+            { match: ["temb"], shape: [1, 4, 3072], dtype: "float16" },
+            // ppf*pph*ppw must equal seq_len (4) and match the upstream
+            // hidden_states token count. Trace-tiny values: 1*2*2 = 4.
+            { match: ["ppf"], shape: [], dtype: "int64", fill: 1 },
+            { match: ["pph"], shape: [], dtype: "int64", fill: 2 },
+            { match: ["ppw"], shape: [], dtype: "int64", fill: 2 },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-transformer-q4",
+    label: "FastWan 2.2 transformer q4f16 (full-shape, weight-only 4-bit)",
+    components: [
+      // Same components as fastwan-transformer-full but q4f16 weights.
+      // Block ~92 MB each (28% of fp16), shell_pre 52 MB, shell_post 1.2 MB
+      // fp16 (unquantized). Tests whether MatMulNBits kernels work in
+      // ORT-web WebGPU + whether q4 gives a meaningful speedup.
+      {
+        name: "shell_pre q4f16 (full-shape)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer-q4f16/shell_pre.onnx", 52 * 1024 * 1024),
+        externalData: {
+          file: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            "onnx/transformer-q4f16/shell_pre.onnx.data",
+            52 * 1024 * 1024,
+          ),
+          pathInGraph: "shell_pre.onnx.data",
+        },
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 48, 21, 30, 52], dtype: "float16" },
+            { match: ["timestep"], shape: [1, 8190], dtype: "int64" },
+            { match: ["encoder_hidden_states"], shape: [1, 512, 4096], dtype: "float16" },
+          ],
+          repeats: 2,
+        },
+      },
+      {
+        name: "block_00 q4f16 (full-shape, 8190 tokens)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/transformer-q4f16/block_00.onnx",
+          92.4 * 1024 * 1024,
+        ),
+        externalData: {
+          file: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            "onnx/transformer-q4f16/block_00.onnx.data",
+            92 * 1024 * 1024,
+          ),
+          pathInGraph: "block_00.onnx.data",
+        },
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["encoder_hidden_states"], shape: [1, 512, 3072], dtype: "float16" },
+            { match: ["timestep_proj"], shape: [1, 8190, 6, 3072], dtype: "float16" },
+            { match: ["freqs_cos"], shape: [1, 8190, 1, 128], dtype: "float32" },
+            { match: ["freqs_sin"], shape: [1, 8190, 1, 128], dtype: "float32" },
+          ],
+          repeats: 2,
+        },
+      },
+      {
+        name: "shell_post (fp16, unquantized)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/transformer-q4f16/shell_post.onnx",
+          1.2 * 1024 * 1024,
+        ),
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["temb"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["ppf"], shape: [], dtype: "int64", fill: 21 },
+            { match: ["pph"], shape: [], dtype: "int64", fill: 15 },
+            { match: ["ppw"], shape: [], dtype: "int64", fill: 26 },
+          ],
+          repeats: 2,
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-transformer-full",
+    label: "FastWan 2.2 transformer full-shape (8190 tokens - tests attention memory)",
+    components: [
+      // Real inference shape. Latent: 21 frames x 30x52 spatial, patch 1x2x2
+      // -> seq_len = 21 * 15 * 26 = 8190. Text seq 512.
+      // This is the existential test: ORT-web's WebGPU attention must not
+      // materialize the full 24-head x 8190x8190 score matrix (~3.1 GB in
+      // fp16) or we'll hit maxBufferSize (2 GB). Run #2 (warm) is the real
+      // number - #1 includes shader compile.
+      {
+        name: "shell_pre full-shape (21f x 30x52 latent, 512 text tokens)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/shell_pre.onnx", 179.7 * 1024 * 1024),
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 48, 21, 30, 52], dtype: "float16" },
+            { match: ["timestep"], shape: [1, 8190], dtype: "int64" },
+            { match: ["encoder_hidden_states"], shape: [1, 512, 4096], dtype: "float16" },
+          ],
+          repeats: 2,
+        },
+      },
+      {
+        name: "block_00 full-shape (8190 tokens - attention memory test)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/block_00.onnx", 327.5 * 1024 * 1024),
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["encoder_hidden_states"], shape: [1, 512, 3072], dtype: "float16" },
+            { match: ["timestep_proj"], shape: [1, 8190, 6, 3072], dtype: "float16" },
+            { match: ["freqs_cos"], shape: [1, 8190, 1, 128], dtype: "float32" },
+            { match: ["freqs_sin"], shape: [1, 8190, 1, 128], dtype: "float32" },
+          ],
+          repeats: 2,
+        },
+      },
+      {
+        name: "shell_post full-shape (ppf=21, pph=15, ppw=26)",
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/shell_post.onnx", 1.2 * 1024 * 1024),
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["temb"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["ppf"], shape: [], dtype: "int64", fill: 21 },
+            { match: ["pph"], shape: [], dtype: "int64", fill: 15 },
+            { match: ["ppw"], shape: [], dtype: "int64", fill: 26 },
+          ],
+          repeats: 2,
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-text-encoder-q4",
+    label: "FastWan 2.2 text encoder q4f16 (UMT5-XXL layer_00 + shell_post)",
+    components: [
+      // Per-layer UMT5 export: each layer takes pre-embedded hidden states
+      // (JS does the token embedding lookup from embedding.bin) and a 4D
+      // extended attention mask. 512 seq_len, d_model 4096. 24 identical
+      // layers; smoke runs layer_00 + shell_post.
+      {
+        name: "layer_00 q4f16 (UMT5 block, 108.6 MB)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/text-encoder-q4f16/layer_00.onnx",
+          108.6 * 1024 * 1024,
+        ),
+        externalData: {
+          file: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            "onnx/text-encoder-q4f16/layer_00.onnx.data",
+            108 * 1024 * 1024,
+          ),
+          pathInGraph: "layer_00.onnx.data",
+        },
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 512, 4096], dtype: "float16" },
+            { match: ["attention_mask"], shape: [1, 1, 1, 512], dtype: "float16" },
+          ],
+          repeats: 2,
+        },
+      },
+      {
+        name: "shell_post (final UMT5LayerNorm, fp16 unquantized)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/text-encoder-q4f16/shell_post.onnx",
+          0.02 * 1024 * 1024,
+        ),
+        dummyRun: {
+          inputs: [{ match: ["hidden_states"], shape: [1, 512, 4096], dtype: "float16" }],
+          repeats: 2,
+        },
+      },
+    ],
+  },
 ];
 
 const cache = new ModelCache({ opfsDirName: "intabai-model-smoke" });
@@ -502,6 +817,64 @@ function log(line = "") {
 
 function setStatus(s: string) {
   $status.textContent = s;
+}
+
+function renderOutputFrame(
+  spec: NonNullable<Component["dummyRun"]>["renderOutput"],
+  results: ort.InferenceSession.OnnxValueMapType,
+): void {
+  if (!spec) return;
+  const keys = Object.keys(results);
+  const outName = keys.find((k) => spec.match.some((m) => k.includes(m))) ?? keys[0];
+  const out = results[outName];
+  if (!out) {
+    log(`renderOutput: no output matched ${spec.match.join("/")}`);
+    return;
+  }
+  const raw = out.data;
+  const canvas = document.getElementById("smoke-output-canvas") as HTMLCanvasElement | null;
+  if (!canvas) return;
+  const { numFrames, channels, height, width } = spec;
+  const frameIndex = spec.frameIndex ?? 0;
+  if (channels !== 3) {
+    log(`renderOutput: only channels=3 supported (got ${channels})`);
+    return;
+  }
+  const plane = height * width;
+  const expectedLen = numFrames * channels * plane;
+  if (raw.length !== expectedLen) {
+    log(
+      `renderOutput: length ${raw.length} != expected ${expectedLen} ` +
+        `(numFrames=${numFrames}, C=${channels}, H=${height}, W=${width})`,
+    );
+    return;
+  }
+  // Convert fp16 bits (Uint16Array) or fp32 (Float32Array) to a single
+  // float value per pixel per channel.
+  const readF = (idx: number): number => {
+    if (raw instanceof Uint16Array) return f16BitsToF32(raw[idx]);
+    if (raw instanceof Float32Array) return raw[idx];
+    return Number(raw[idx as keyof typeof raw]);
+  };
+  const range = spec.pixelRange ?? "-1to1";
+  const mapPixel = range === "0to1" ? (v: number) => v * 255 : (v: number) => (v * 0.5 + 0.5) * 255;
+  const base = frameIndex * channels * plane;
+  const rgba = new Uint8ClampedArray(plane * 4);
+  for (let i = 0; i < plane; i++) {
+    const r = readF(base + i);
+    const g = readF(base + plane + i);
+    const b = readF(base + 2 * plane + i);
+    rgba[i * 4 + 0] = Math.max(0, Math.min(255, Math.round(mapPixel(r))));
+    rgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(mapPixel(g))));
+    rgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(mapPixel(b))));
+    rgba[i * 4 + 3] = 255;
+  }
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+  log(`renderOutput: drew frame ${frameIndex} of "${outName}" to canvas`);
 }
 
 async function dumpEnvironment() {
@@ -649,10 +1022,25 @@ async function tryComponent(c: Component) {
   if (session && c.dummyRun) {
     setStatus(`dummy run ${c.name}`);
     const dummyDtype = c.dummyRun.dtype ?? "float16";
-    const buildTensor = (dtype: "float16" | "float32", len: number, shape: number[]) => {
+    type AnyDtype = "float16" | "float32" | "int64" | "int32";
+    const buildTensor = (dtype: AnyDtype, len: number, shape: number[], fill = 0) => {
       if (dtype === "float32") {
-        return new ort.Tensor("float32", new Float32Array(len), shape);
+        const a = new Float32Array(len);
+        if (fill !== 0) a.fill(fill);
+        return new ort.Tensor("float32", a, shape);
       }
+      if (dtype === "int64") {
+        const a = new BigInt64Array(len);
+        if (fill !== 0) a.fill(BigInt(fill));
+        return new ort.Tensor("int64", a, shape);
+      }
+      if (dtype === "int32") {
+        const a = new Int32Array(len);
+        if (fill !== 0) a.fill(fill);
+        return new ort.Tensor("int32", a, shape);
+      }
+      // float16 zero is Uint16 0x0000; nonzero fp16 fill would need a cast
+      // helper - skip for now since fill is only used for int scalars.
       return new ort.Tensor("float16", new Uint16Array(len), shape);
     };
     try {
@@ -664,9 +1052,26 @@ async function tryComponent(c: Component) {
           continue;
         }
         const len = spec.shape.reduce((a, b) => a * b, 1);
-        // Heuristic: transformer-style int64 inputs (input_ids,
+        if (spec.gaussian) {
+          const rng = mulberry32(12345);
+          const noise = gaussianNoise(len, rng);
+          const d = spec.dtype ?? dummyDtype;
+          if (d === "float16") {
+            feeds[inputName] = new ort.Tensor("float16", f32ToF16Array(noise), spec.shape);
+          } else if (d === "float32") {
+            feeds[inputName] = new ort.Tensor("float32", noise, spec.shape);
+          } else {
+            log(`  dummyRun: gaussian unsupported for dtype ${d}, falling back to zeros`);
+            feeds[inputName] = buildTensor(d, len, spec.shape);
+          }
+          continue;
+        }
+        if (spec.dtype) {
+          feeds[inputName] = buildTensor(spec.dtype, len, spec.shape, spec.fill);
+          continue;
+        }
+        // Heuristic fallback: transformer-style int64 inputs (input_ids,
         // attention_mask, token_type_ids) get a BigInt64Array of zeros.
-        // Avoids needing a per-input dtype field for the common case.
         const isIntInput = spec.match.some((m) => /input_ids|attention_mask|token_type/i.test(m));
         if (isIntInput) {
           feeds[inputName] = new ort.Tensor("int64", new BigInt64Array(len), spec.shape);
@@ -676,18 +1081,22 @@ async function tryComponent(c: Component) {
       }
       const repeats = c.dummyRun.repeats ?? 1;
       const tRun0 = performance.now();
+      let lastResults: ort.InferenceSession.OnnxValueMapType | null = null;
       try {
-        await session.run(feeds);
+        lastResults = await session.run(feeds);
         const dt0 = performance.now() - tRun0;
         if (repeats > 1) {
           log(`session.run #1 (cold, includes shader compile) OK in ${dt0.toFixed(0)}ms`);
           for (let i = 2; i <= repeats; i++) {
             const t = performance.now();
-            await session.run(feeds);
+            lastResults = await session.run(feeds);
             log(`session.run #${i} (warm) OK in ${(performance.now() - t).toFixed(0)}ms`);
           }
         } else {
           log(`session.run (dummy zeros) OK in ${dt0.toFixed(0)}ms`);
+        }
+        if (c.dummyRun.renderOutput && lastResults) {
+          renderOutputFrame(c.dummyRun.renderOutput, lastResults);
         }
       } catch (err) {
         const msg = (err as Error).message;
@@ -712,7 +1121,7 @@ async function tryComponent(c: Component) {
             // For wantsInt64: only swap timestep (the "current" wrong input)
             // For wantsInt32: only swap int-shaped inputs to int32
             if (wantsInt64 && isTimestep) {
-              feeds[inputName] = new ort.Tensor("int64", BigInt64Array.from([0n]), spec.shape);
+              feeds[inputName] = new ort.Tensor("int64", new BigInt64Array(len), spec.shape);
             } else if (wantsInt32 && isIntInput) {
               feeds[inputName] = new ort.Tensor("int32", new Int32Array(len), spec.shape);
             }

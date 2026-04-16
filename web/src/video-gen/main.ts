@@ -1,211 +1,365 @@
-// Video-gen tool - UI shell. Backend implementations live in `backends/`.
-// This file only knows about the VideoGenBackend interface; it does not
-// reference any specific model implementation directly.
+// video-gen tool DOM shell. Minimal UI: cached-models panel + prompt +
+// (seed, debug-log) advanced options + generate + progress + result
+// canvas. FastWan 2.2 config is otherwise fixed (3 DMD steps, 480x832,
+// 5s @ 16fps), so there is no resolution/steps/CFG control here.
+//
+// Backend dispatch: main calls generateFastwan directly because that's
+// the only backend right now. When we add a second model, replace the
+// direct call with a discriminator on VideoModelEntry.backend.
 
-import { listModels, getModel, type ModelEntry } from "./models";
-import type { ReferenceFrame, VideoGenCapabilities } from "./pipeline";
 import { initThemeSelect } from "../shared/theme";
+import { PersistedSettings } from "../shared/persisted-settings";
+import { ProgressVideo } from "../shared/progress-video";
+import { VideoGenModelManager } from "./model-manager";
+import { VIDEO_GEN_MODELS } from "./models";
+import {
+  generateFastwan,
+  type ProgressInfo,
+} from "../fastwan/generate";
+import { FastwanStopAfterTextEncoder } from "../fastwan/generate";
+import { encodeFramesToMp4 } from "../fastwan/encode-mp4";
+
+interface VideoGenSettings {
+  debugLog: boolean;
+  stopAfterTextEncoder: boolean;
+  seed: string;
+  modelId: string;
+  prompt: string;
+  advancedOpen: boolean;
+}
+
+const DEFAULT_SETTINGS: VideoGenSettings = {
+  debugLog: false,
+  stopAfterTextEncoder: false,
+  seed: "",
+  modelId: "",
+  prompt: "",
+  advancedOpen: false,
+};
+
+const persisted = new PersistedSettings<VideoGenSettings>("intabai:video-gen:settings");
 
 {
   const sel = document.getElementById("theme-select");
   if (sel instanceof HTMLSelectElement) initThemeSelect(sel);
 }
 
-// --- DOM refs -----------------------------------------------------------
+// ---- DOM refs --------------------------------------------------------------
 
-const $ = <T extends HTMLElement>(id: string): T => {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`Missing element #${id}`);
-  return el as T;
-};
+const modelManagerContainer = document.getElementById("model-manager") as HTMLDivElement;
+const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
+const promptInput = document.getElementById("prompt") as HTMLTextAreaElement;
+const seedInput = document.getElementById("seed-input") as HTMLInputElement;
+const debugLogCheck = document.getElementById("debug-log-check") as HTMLInputElement;
+const stopAfterTextEncoderCheck = document.getElementById("stop-after-text-encoder-check") as HTMLInputElement;
+const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
+const debugLogPane = document.getElementById("debug-log-pane") as HTMLTextAreaElement;
+const generateBtn = document.getElementById("generate-btn") as HTMLButtonElement;
+const processing = document.getElementById("processing") as HTMLFieldSetElement;
+const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
+const previewSection = document.getElementById("preview-section") as HTMLFieldSetElement;
+const previewCanvas = document.getElementById("preview-canvas") as HTMLCanvasElement;
+const previewControls = document.getElementById("preview-controls") as HTMLDivElement;
+const resultSection = document.getElementById("result-section") as HTMLFieldSetElement;
+const resultVideo = document.getElementById("result-video") as HTMLVideoElement;
+const resultControls = document.getElementById("result-controls") as HTMLDivElement;
+const pipBtn = document.getElementById("pip-btn") as HTMLButtonElement;
+const pv = new ProgressVideo(document.getElementById("progress-video") as HTMLVideoElement);
 
-const modelSelect = $<HTMLSelectElement>("model-select");
-const resolutionSelect = $<HTMLSelectElement>("resolution-select");
+// ---- Settings --------------------------------------------------------------
 
-const negativePromptCheck = $<HTMLInputElement>("negative-prompt-check");
-const negativePromptField = $<HTMLTextAreaElement>("negative-prompt");
-
-const referenceFramesSection = $<HTMLDetailsElement>("reference-frames-section");
-const refFile = $<HTMLInputElement>("ref-file");
-const refFrameIndex = $<HTMLInputElement>("ref-frame-index");
-const addRefButton = $<HTMLButtonElement>("add-ref-button");
-const refList = $<HTMLDivElement>("ref-list");
-
-const numFramesInput = $<HTMLInputElement>("num-frames");
-const framesHint = $<HTMLElement>("frames-hint");
-const numStepsInput = $<HTMLInputElement>("num-steps");
-const stepsHint = $<HTMLElement>("steps-hint");
-const seedInput = $<HTMLInputElement>("seed");
-const resetOptionsBtn = $<HTMLButtonElement>("reset-options-btn");
-
-const generateButton = $<HTMLButtonElement>("generate-button");
-const processingFieldset = $<HTMLFieldSetElement>("processing");
-const progressBar = $<HTMLProgressElement>("progress");
-const statusLine = $<HTMLElement>("status-line");
-const frameStrip = $<HTMLDivElement>("frame-strip");
-const errorLine = $<HTMLDivElement>("error-line");
-const cancelButton = $<HTMLButtonElement>("cancel-button");
-
-// --- State --------------------------------------------------------------
-
-const referenceFrames: ReferenceFrame[] = [];
-let currentModel: ModelEntry | undefined;
-
-// --- Model dropdown -----------------------------------------------------
-
-function populateModelSelect(): void {
-  modelSelect.innerHTML = "";
-  for (const m of listModels()) {
-    const opt = document.createElement("option");
-    opt.value = m.id;
-    opt.textContent = m.name;
-    modelSelect.appendChild(opt);
-  }
+function loadSettings(): VideoGenSettings {
+  const s = persisted.load();
+  return { ...DEFAULT_SETTINGS, ...(s ?? {}) };
 }
 
-function applyCapabilities(caps: VideoGenCapabilities): void {
-  // Resolution dropdown
-  resolutionSelect.innerHTML = "";
-  for (const r of caps.resolutions) {
-    const opt = document.createElement("option");
-    opt.value = r;
-    opt.textContent = r;
-    if (r === caps.defaultResolution) opt.selected = true;
-    resolutionSelect.appendChild(opt);
-  }
-
-  // Frame count
-  numFramesInput.min = String(caps.minFrames);
-  numFramesInput.max = String(caps.maxFrames);
-  numFramesInput.value = String(caps.defaultFrames);
-  framesHint.textContent = `${caps.minFrames}-${caps.maxFrames} @ ${caps.nativeFps} fps`;
-
-  // Steps
-  numStepsInput.min = String(Math.min(...caps.stepOptions));
-  numStepsInput.max = String(Math.max(...caps.stepOptions));
-  numStepsInput.value = String(caps.defaultSteps);
-  stepsHint.textContent = `recommended: ${caps.stepOptions.join(", ")}`;
-
-  // Negative prompt: hide entire control if unsupported
-  const negParent = negativePromptCheck.parentElement;
-  if (negParent) negParent.style.display = caps.supportsNegativePrompt ? "" : "none";
-  if (!caps.supportsNegativePrompt) {
-    negativePromptCheck.checked = false;
-    negativePromptField.style.display = "none";
-  }
-
-  // Reference frames section visibility
-  const showRefs = caps.supportsI2V || caps.supportsArbitraryReferenceFrames;
-  referenceFramesSection.style.display = showRefs ? "" : "none";
-
-  // If only frame 0 is allowed, lock the frame index input
-  if (caps.supportsI2V && !caps.supportsArbitraryReferenceFrames) {
-    refFrameIndex.value = "0";
-    refFrameIndex.disabled = true;
-    refFrameIndex.max = "0";
-  } else {
-    refFrameIndex.disabled = false;
-    refFrameIndex.max = String(caps.maxFrames - 1);
-  }
+function applySettings(s: VideoGenSettings): void {
+  debugLogCheck.checked = s.debugLog;
+  stopAfterTextEncoderCheck.checked = s.stopAfterTextEncoder;
+  seedInput.value = s.seed;
+  promptInput.value = s.prompt;
+  advancedSection.open = s.advancedOpen;
+  // modelSelect is filled by refreshModelSelect; setting .value before the
+  // options exist is a no-op, so the preferred id is read again after
+  // refreshModelSelect() picks option state.
+  preferredModelId = s.modelId;
 }
 
-function onModelChange(): void {
-  const id = modelSelect.value;
-  currentModel = getModel(id);
-  if (!currentModel) return;
-  applyCapabilities(currentModel.capabilities);
-  // Drop any reference frames that no longer fit the new model's range.
-  for (let i = referenceFrames.length - 1; i >= 0; i--) {
-    if (referenceFrames[i].frameIndex >= currentModel.capabilities.maxFrames) {
-      referenceFrames.splice(i, 1);
-    }
-  }
-  renderRefList();
-  // TODO: check OPFS cache, enable/disable generate button
+function currentSettings(): VideoGenSettings {
+  return {
+    debugLog: debugLogCheck.checked,
+    stopAfterTextEncoder: stopAfterTextEncoderCheck.checked,
+    seed: seedInput.value,
+    modelId: modelSelect.value,
+    prompt: promptInput.value,
+    advancedOpen: advancedSection.open,
+  };
 }
 
-// --- Negative prompt toggle ---------------------------------------------
+function persistSettings(): void {
+  persisted.save(currentSettings());
+}
 
-negativePromptCheck.addEventListener("change", () => {
-  negativePromptField.style.display = negativePromptCheck.checked ? "" : "none";
+// ---- Model manager ---------------------------------------------------------
+
+let preferredModelId = "";
+
+const modelManager = new VideoGenModelManager(modelManagerContainer, () => {
+  refreshModelSelect();
+  updateGenerateButton();
 });
 
-// --- Reference frame list -----------------------------------------------
-
-function renderRefList(): void {
-  refList.innerHTML = "";
-  referenceFrames.sort((a, b) => a.frameIndex - b.frameIndex);
-  referenceFrames.forEach((rf, i) => {
-    const row = document.createElement("div");
-    row.className = "ref-row";
-    const thumb = document.createElement("canvas");
-    thumb.width = rf.image.width;
-    thumb.height = rf.image.height;
-    const ctx = thumb.getContext("2d");
-    ctx?.drawImage(rf.image, 0, 0);
-    const label = document.createElement("span");
-    label.textContent = `frame ${rf.frameIndex}`;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "remove";
-    remove.onclick = () => {
-      referenceFrames.splice(i, 1);
-      renderRefList();
-    };
-    row.appendChild(thumb);
-    row.appendChild(label);
-    row.appendChild(remove);
-    refList.appendChild(row);
-  });
-  // Update <summary> with count
-  const summary = referenceFramesSection.querySelector("summary");
-  if (summary) {
-    const n = referenceFrames.length;
-    summary.textContent = `reference frames (${n === 0 ? "none" : n})`;
+function refreshModelSelect(): void {
+  const previous = modelSelect.value;
+  modelSelect.innerHTML = "";
+  for (const m of VIDEO_GEN_MODELS) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    const cached = modelManager.isReady(m.id);
+    opt.textContent = cached ? m.name : `${m.name} - download to enable`;
+    opt.disabled = !cached;
+    modelSelect.appendChild(opt);
+  }
+  // Priority: previous live selection > preferred id from saved settings
+  // > first cached model.
+  if (previous && modelManager.isReady(previous)) {
+    modelSelect.value = previous;
+  } else if (preferredModelId && modelManager.isReady(preferredModelId)) {
+    modelSelect.value = preferredModelId;
+  } else {
+    const firstReady = VIDEO_GEN_MODELS.find((m) => modelManager.isReady(m.id));
+    modelSelect.value = firstReady ? firstReady.id : "";
   }
 }
 
-addRefButton.onclick = async () => {
-  const file = refFile.files?.[0];
-  if (!file) {
-    statusLine.textContent = "pick an image first";
+function selectedModel() {
+  const id = modelSelect.value;
+  if (!id || !modelManager.isReady(id)) return undefined;
+  return VIDEO_GEN_MODELS.find((m) => m.id === id);
+}
+
+function updateGenerateButton(): void {
+  const ready = selectedModel() !== undefined;
+  const hasPrompt = promptInput.value.trim().length > 0;
+  generateBtn.disabled = !(ready && hasPrompt);
+}
+
+promptInput.addEventListener("input", () => {
+  updateGenerateButton();
+  persistSettings();
+});
+modelSelect.addEventListener("change", () => {
+  updateGenerateButton();
+  persistSettings();
+});
+seedInput.addEventListener("change", persistSettings);
+debugLogCheck.addEventListener("change", persistSettings);
+stopAfterTextEncoderCheck.addEventListener("change", persistSettings);
+advancedSection.addEventListener("toggle", persistSettings);
+
+// ---- Preview + result ------------------------------------------------------
+//
+// Preview (intermediate decode between denoising steps): canvas with a
+// setInterval loop, because we only have ImageBitmaps and we want to
+// show them immediately without paying the MP4-encode cost.
+// Result (final output): MP4 Blob via WebCodecs, loaded into a <video>
+// with native controls + a download link.
+
+let previewTimer: number | null = null;
+
+function stopPreview(): void {
+  if (previewTimer !== null) {
+    clearInterval(previewTimer);
+    previewTimer = null;
+  }
+}
+
+function renderPreview(frames: ImageBitmap[], fps: number): void {
+  stopPreview();
+  if (frames.length === 0) return;
+  previewCanvas.width = frames[0].width;
+  previewCanvas.height = frames[0].height;
+  const ctx = previewCanvas.getContext("2d");
+  if (!ctx) return;
+  let i = 0;
+  const draw = () => {
+    ctx.drawImage(frames[i], 0, 0);
+    i = (i + 1) % frames.length;
+  };
+  draw();
+  previewTimer = window.setInterval(draw, 1000 / fps);
+
+  previewControls.innerHTML = "";
+  const info = document.createElement("small");
+  info.textContent = `${frames.length} frames @ ${fps} fps (intermediate preview, still denoising)`;
+  previewControls.appendChild(info);
+}
+
+/** Track the current result blob URL so we can revoke it on re-run. */
+let currentResultUrl: string | null = null;
+
+async function renderFinalResult(
+  frames: ImageBitmap[],
+  fps: number,
+  seed: number,
+): Promise<void> {
+  stopPreview();
+  previewSection.style.display = "none";
+
+  // Encoding an 81-frame 480x832 MP4 via WebCodecs takes ~1s on desktop.
+  // Show a brief status while it runs.
+  pv.setStatus("encoding mp4...");
+  const encodeStart = performance.now();
+  const blob = await encodeFramesToMp4({ frames, fps });
+  const encodeMs = performance.now() - encodeStart;
+
+  if (currentResultUrl) URL.revokeObjectURL(currentResultUrl);
+  currentResultUrl = URL.createObjectURL(blob);
+  resultVideo.src = currentResultUrl;
+  resultVideo.loop = true;
+  resultVideo.play().catch(() => {});
+  resultSection.style.display = "";
+
+  resultControls.innerHTML = "";
+  const dl = document.createElement("a");
+  dl.href = currentResultUrl;
+  dl.download = `video-gen-${seed}.mp4`;
+  dl.textContent = "download mp4";
+  resultControls.appendChild(dl);
+
+  const info = document.createElement("small");
+  info.style.marginLeft = "8px";
+  const sizeMb = (blob.size / 1e6).toFixed(1);
+  info.textContent = `${frames.length} frames @ ${fps} fps, ${sizeMb} MB (encoded in ${encodeMs.toFixed(0)} ms)`;
+  resultControls.appendChild(info);
+}
+
+// ---- Debug log -------------------------------------------------------------
+
+function startDebugPane(enabled: boolean): ((msg: string) => void) | undefined {
+  if (!enabled) {
+    debugLogPane.style.display = "none";
+    debugLogPane.value = "";
+    return undefined;
+  }
+  debugLogPane.style.display = "block";
+  debugLogPane.value = "";
+  return (msg: string) => {
+    debugLogPane.value += msg + "\n";
+    debugLogPane.scrollTop = debugLogPane.scrollHeight;
+  };
+}
+
+// ---- Generate --------------------------------------------------------------
+
+let currentAbort: AbortController | null = null;
+
+async function onGenerate(): Promise<void> {
+  const model = selectedModel();
+  if (!model) return;
+
+  const prompt = promptInput.value.trim();
+  if (!prompt) return;
+
+  persistSettings();
+  const settings = currentSettings();
+  const seedTrimmed = settings.seed.trim();
+  const seed = seedTrimmed === "" ? undefined : Number(seedTrimmed);
+  if (seed !== undefined && (!Number.isFinite(seed) || seed < 0)) {
+    console.error("[video-gen] seed must be a non-negative number");
     return;
   }
-  const bitmap = await createImageBitmap(file);
-  referenceFrames.push({
-    frameIndex: parseInt(refFrameIndex.value, 10) || 0,
-    image: bitmap,
-  });
-  refFile.value = "";
-  renderRefList();
-};
 
-// --- Reset options ------------------------------------------------------
+  currentAbort = new AbortController();
+  generateBtn.disabled = true;
+  cancelBtn.style.display = "";
+  cancelBtn.disabled = false;
+  processing.style.display = "";
+  resultSection.style.display = "none";
+  previewSection.style.display = "none";
+  const onDebug = startDebugPane(settings.debugLog);
 
-resetOptionsBtn.onclick = () => {
-  if (currentModel) applyCapabilities(currentModel.capabilities);
-  seedInput.value = "";
-  negativePromptField.value = "";
-  negativePromptCheck.checked = false;
-  negativePromptField.style.display = "none";
-};
+  // Start the progress video. Must be in the generate-click gesture so
+  // AudioContext.resume + video.play are allowed. Expose the PiP button
+  // so mobile users can background the tab without losing the GPU.
+  await pv.start("generating video", onDebug);
+  pipBtn.style.display = "";
+  const onPipClick = () => pv.enterPip();
+  pipBtn.addEventListener("click", onPipClick);
 
-// --- Generate (stub) ----------------------------------------------------
+  const runStart = performance.now();
+  try {
+    if (model.backend !== "fastwan") {
+      throw new Error(`unknown backend: ${model.backend}`);
+    }
+    const result = await generateFastwan({
+      cache: modelManager.cache,
+      prompt,
+      seed,
+      transformerPrecision: model.transformerPrecision,
+      stopAfterTextEncoder: settings.stopAfterTextEncoder,
+      signal: currentAbort.signal,
+      onPreview: (frames) => {
+        previewSection.style.display = "";
+        renderPreview(frames, 16);
+      },
+      onProgress: (info: ProgressInfo) => {
+        const elapsed = performance.now() - runStart;
+        // ETA only once we're into denoise - earlier stages are a tiny
+        // fraction of total work and extrapolating from ~4% progress
+        // after the text encoder gives a misleadingly-short estimate.
+        let eta = "";
+        if ((info.stage === "denoise" || info.stage === "vae") && info.pct > 0.05) {
+          const etaMs = (elapsed / info.pct) * (1 - info.pct);
+          eta = ` ETA ${formatDuration(etaMs)}`;
+        }
+        pv.setProgress(info.pct * 100);
+        pv.setStatus(`${info.stage}${eta}`);
+        pv.setStats(info.message);
+      },
+      onDebug,
+    });
+    await renderFinalResult(result.frames, result.fps, result.seed);
+    pv.setProgress(100);
+    pv.setStatus(`done, seed ${result.seed}`);
+    pv.setStats("");
+  } catch (err) {
+    if (currentAbort?.signal.aborted) {
+      pv.setStatus("cancelled");
+    } else if (err instanceof FastwanStopAfterTextEncoder) {
+      pv.setStatus("stopped (debug)");
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[video-gen]", err);
+      pv.setStatus(`failed: ${msg}`);
+    }
+  } finally {
+    cancelBtn.style.display = "none";
+    pipBtn.removeEventListener("click", onPipClick);
+    pipBtn.style.display = "none";
+    pv.stop();
+    currentAbort = null;
+    updateGenerateButton();
+  }
+}
 
-generateButton.onclick = () => {
-  processingFieldset.style.display = "";
-  statusLine.textContent = "generate not implemented yet (spike scaffold)";
-  errorLine.textContent = "";
-  progressBar.value = 0;
-  frameStrip.innerHTML = "";
-};
+generateBtn.addEventListener("click", onGenerate);
+cancelBtn.addEventListener("click", () => {
+  currentAbort?.abort();
+  cancelBtn.disabled = true;
+});
 
-cancelButton.onclick = () => {
-  statusLine.textContent = "cancelled";
-};
+function formatDuration(ms: number): string {
+  if (!isFinite(ms) || ms < 0) return "?";
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
+}
 
-// --- Init ---------------------------------------------------------------
+// ---- Init ------------------------------------------------------------------
 
-modelSelect.addEventListener("change", onModelChange);
-populateModelSelect();
-onModelChange();
+applySettings(loadSettings());
+refreshModelSelect();
+void modelManager.init();

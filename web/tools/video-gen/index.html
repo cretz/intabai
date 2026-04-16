@@ -6,8 +6,30 @@
     <title>video gen - intabai</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
-      // No-flash theme apply: read stored preference before style.css
-      // loads so we never paint the wrong background. See src/shared/theme.ts.
+      // Silence vite's HMR client. We run with server.hmr:false so long
+      // generations are not reloaded mid-run, but vite still injects
+      // /@vite/client. Its failed ws connection leaves this.ws undefined,
+      // and every later sendError() call blows up with
+      // "Cannot read properties of undefined (reading 'send')". We stub
+      // the ws before the client loads so send()/close() are no-ops.
+      (function () {
+        var Original = window.WebSocket;
+        window.WebSocket = function (url, protocols) {
+          if (typeof url === "string" && url.indexOf("?token=") !== -1) {
+            return {
+              readyState: 3, send: function () {}, close: function () {},
+              addEventListener: function () {}, removeEventListener: function () {},
+              dispatchEvent: function () { return true; },
+              onopen: null, onclose: null, onmessage: null, onerror: null,
+            };
+          }
+          return new Original(url, protocols);
+        };
+        for (var k in Original) { try { window.WebSocket[k] = Original[k]; } catch (e) {} }
+        window.WebSocket.prototype = Original.prototype;
+      })();
+    </script>
+    <script>
       (function () {
         try {
           var v = localStorage.getItem("intabai:theme");
@@ -18,48 +40,6 @@
       })();
     </script>
     <link rel="stylesheet" href="/style.css" />
-    <style>
-      .field {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 6px;
-      }
-      .field label {
-        min-width: 80px;
-      }
-      .field input[type="checkbox"] + label {
-        min-width: 0;
-      }
-      #prompt {
-        width: 100%;
-        min-height: 80px;
-        font-family: inherit;
-        box-sizing: border-box;
-      }
-      #frame-strip {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-top: 8px;
-      }
-      #frame-strip canvas,
-      #frame-strip img {
-        max-width: 128px;
-        height: auto;
-      }
-      .ref-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-top: 4px;
-      }
-      .ref-row img {
-        max-height: 48px;
-        max-width: 48px;
-      }
-    </style>
   </head>
   <body>
     <div class="topbar">
@@ -73,10 +53,8 @@
         </select>
       </div>
     </div>
-    <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
-    </div>
-    <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px">
-    </div>
+    <div id="browser-error" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>
+    <div id="gpu-warning" style="display: none; border: 2px solid; padding: 8px; margin-bottom: 10px"></div>
     <hr />
 
     <fieldset>
@@ -95,75 +73,77 @@
       <legend>prompt</legend>
       <textarea
         id="prompt"
-        placeholder="a cinematic shot of a jeep driving through the desert at sunset"
+        style="width: 100%; min-height: 80px; box-sizing: border-box; font-family: inherit"
+        placeholder="a red panda eating bamboo in a sunlit forest"
       ></textarea>
-      <div class="field">
-        <input type="checkbox" id="negative-prompt-check" />
-        <label for="negative-prompt-check">use negative prompt</label>
-      </div>
-      <textarea
-        id="negative-prompt"
-        placeholder="blurry, low quality, distorted"
-        style="width: 100%; min-height: 50px; box-sizing: border-box; display: none; font-family: inherit"
-      ></textarea>
-      <details id="reference-frames-section" style="margin-top: 8px">
-        <summary>reference frames (none)</summary>
-        <small>
-          Optional. Empty = pure text-to-video. Add an image at frame 0 for
-          classic image-to-video. Add multiple images at different frame
-          indices to use them as keyframe references.
-        </small>
-        <div class="field" style="margin-top: 6px">
-          <input type="file" id="ref-file" accept="image/*" />
-          <label for="ref-frame-index" style="min-width: 0">at frame</label>
-          <input type="number" id="ref-frame-index" min="0" value="0" style="flex: 0 0 60px; min-width: 0" />
-          <button type="button" id="add-ref-button">add</button>
-        </div>
-        <div id="ref-list"></div>
-      </details>
     </fieldset>
 
     <fieldset>
       <legend>options</legend>
-      <div class="field">
+      <div class="field" style="margin-bottom: 6px">
         <label for="model-select">model</label>
         <select id="model-select"></select>
       </div>
-      <div class="field">
-        <label for="resolution-select">resolution</label>
-        <select id="resolution-select"></select>
-      </div>
-      <div class="field">
-        <label for="num-frames">frames</label>
-        <input type="number" id="num-frames" min="8" max="32" value="16" style="flex: 0 0 80px; min-width: 0" />
-        <small id="frames-hint"></small>
-      </div>
-      <div class="field">
-        <label for="num-steps">steps</label>
-        <input type="number" id="num-steps" min="1" max="8" value="4" style="flex: 0 0 80px; min-width: 0" />
-        <small id="steps-hint"></small>
-      </div>
-      <div class="field">
-        <label for="seed">seed</label>
-        <input type="number" id="seed" placeholder="random" style="flex: 0 0 120px; min-width: 0" />
-      </div>
-      <div class="field">
-        <button type="button" id="reset-options-btn">reset to defaults</button>
-      </div>
+      <small>
+        output is fixed at 480×832, 81 frames @ 16 fps, 3 DMD steps -
+        the model only supports this geometry.
+      </small>
+      <details id="advanced-section" style="margin-top: 8px">
+        <summary>advanced</summary>
+        <div class="field" style="margin-top: 6px">
+          <label for="seed-input">seed</label>
+          <input type="number" id="seed-input" min="0" step="1" style="width: 10em" placeholder="random" />
+          <small>- leave blank for a fresh random seed each run.</small>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="debug-log-check" />
+          <span style="flex: 1">
+            <label for="debug-log-check">debug log</label>
+            <small>
+              - show a verbose per-stage log (timings, token counts,
+              per-step progress) under the progress bar. noisy; useful
+              when something looks wrong.
+            </small>
+          </span>
+        </div>
+        <div class="field" style="margin-top: 6px">
+          <input type="checkbox" id="stop-after-text-encoder-check" />
+          <span style="flex: 1">
+            <label for="stop-after-text-encoder-check">stop after text encoder</label>
+            <small>
+              - halt the run right after the text encoder emits its stats
+              and per-token hex dumps. pair with debug log on and optionally
+              ?textwasm=1 (force wasm EP) for a webgpu-vs-cpu byte diff
+              without waiting ~10 min for the transformer.
+            </small>
+          </span>
+        </div>
+      </details>
     </fieldset>
 
-    <button id="generate-button" disabled>generate</button>
+    <button id="generate-btn" disabled>generate</button>
 
     <fieldset id="processing" style="display: none">
       <legend>processing</legend>
-      <progress id="progress" value="0" max="1" style="width: 100%"></progress>
-      <div style="margin-top: 6px"><strong id="status-line"></strong></div>
-      <div id="frame-strip"></div>
-      <div id="error-line" style="margin-top: 6px"></div>
-      <button type="button" id="cancel-button" style="display: none; margin-top: 8px">cancel</button>
+      <video id="progress-video" width="200" height="200" autopictureinpicture></video>
+      <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center">
+        <button type="button" id="cancel-btn" style="display: none">cancel</button>
+        <button type="button" id="pip-btn" style="display: none; margin-left: auto">PiP GPU keep alive</button>
+      </div>
+      <textarea id="debug-log-pane" readonly style="display: none; width: 100%; height: 220px; margin-top: 8px; font-family: monospace; font-size: 11px; white-space: pre; overflow: auto; box-sizing: border-box"></textarea>
     </fieldset>
 
-    <div id="output"></div>
+    <fieldset id="preview-section" style="display: none">
+      <legend>preview (intermediate step)</legend>
+      <canvas id="preview-canvas" style="max-width: 100%; height: auto; image-rendering: auto"></canvas>
+      <div id="preview-controls" style="margin-top: 8px"></div>
+    </fieldset>
+
+    <fieldset id="result-section" style="display: none">
+      <legend>result</legend>
+      <video id="result-video" controls playsinline style="max-width: 100%; height: auto"></video>
+      <div id="result-controls" style="margin-top: 8px"></div>
+    </fieldset>
 
     <script type="module" src="/src/video-gen/main.ts"></script>
   </body>
