@@ -24,6 +24,7 @@ import * as ort from "onnxruntime-web";
 import type { ModelCache } from "../shared/model-cache";
 import { createSession, type OrtModelFile } from "../sd15/ort-helpers";
 import { copyF16Bits, f16ToF32Array } from "../sd15/fp16";
+import { FASTWAN_DEBUG_BLOCK00, FASTWAN_TX_NOOPT } from "./models";
 
 export const FASTWAN_NUM_BLOCKS = 30;
 
@@ -79,15 +80,23 @@ export interface ForwardInput {
   /** Optional per-tensor stats hook for diagnosing gray-output bugs.
    *  Called with intermediate fp16-bit tensors at key stages. */
   onStatsFp16?: (name: string, bits: Uint16Array) => void;
+  /** Debug: after block_00 runs at step 1 and its hex dump is emitted,
+   *  throw via the provided callback so the pipeline halts before
+   *  blocks 1..29 execute. Block_00 itself still runs (we need its output
+   *  for the byte-diff). */
+  onStopAfterBlock00?: () => never;
 }
 
 export class Transformer {
   private shellPre: ort.InferenceSession | null = null;
   private shellPost: ort.InferenceSession | null = null;
+  /** Fires the ?debugblock00=1 per-tap dump at most once per page load. */
+  private didDumpIntermediates = false;
 
   constructor(
     private readonly cache: ModelCache,
     private readonly files: TransformerFiles,
+    private readonly providers: ("webgpu" | "wasm")[] = ["webgpu", "wasm"],
   ) {
     if (files.blocks.length !== FASTWAN_NUM_BLOCKS) {
       throw new Error(
@@ -97,17 +106,24 @@ export class Transformer {
   }
 
   async load(): Promise<void> {
+    const opts: Partial<ort.InferenceSession.SessionOptions> = FASTWAN_TX_NOOPT
+      ? { graphOptimizationLevel: "disabled" }
+      : {};
     if (!this.shellPre) {
-      this.shellPre = await createSession(this.cache, this.files.shellPre, [
-        "webgpu",
-        "wasm",
-      ]);
+      this.shellPre = await createSession(
+        this.cache,
+        this.files.shellPre,
+        this.providers,
+        opts,
+      );
     }
     if (!this.shellPost) {
-      this.shellPost = await createSession(this.cache, this.files.shellPost, [
-        "webgpu",
-        "wasm",
-      ]);
+      this.shellPost = await createSession(
+        this.cache,
+        this.files.shellPost,
+        this.providers,
+        opts,
+      );
     }
   }
 
@@ -203,14 +219,25 @@ export class Transformer {
     // residency is 2 block sessions (~2 x 92 MB q4 graphs + activations),
     // still well under mobile maxBufferSize.
     const loadBlock = (i: number) =>
-      createSession(this.cache, this.files.blocks[i], ["webgpu", "wasm"]);
+      createSession(
+        this.cache,
+        this.files.blocks[i],
+        this.providers,
+        FASTWAN_TX_NOOPT ? { graphOptimizationLevel: "disabled" } : {},
+      );
+    // Debug mode: the ?debugblock00=1 flag swaps block_00 for a monolithic
+    // fp16 graph (~327 MB weights). Double-buffering loads block_01 while
+    // block_00 runs, so two large sessions are resident at once. Since the
+    // debug use-case always stops after block_00, skip the prefetch to
+    // keep peak GPU residency to one session.
+    const prefetchBlocks = !FASTWAN_DEBUG_BLOCK00;
     let currentLoad = loadBlock(0);
     for (let i = 0; i < FASTWAN_NUM_BLOCKS; i++) {
       const blockSession = await currentLoad;
       const tRun = performance.now();
       // Kick off next-block load now so its compile overlaps this run.
       let nextLoad: Promise<ort.InferenceSession> | null = null;
-      if (i + 1 < FASTWAN_NUM_BLOCKS) {
+      if (prefetchBlocks && i + 1 < FASTWAN_NUM_BLOCKS) {
         nextLoad = loadBlock(i + 1);
       }
       try {
@@ -235,6 +262,24 @@ export class Transformer {
         }
         if (debug && input.stepIndex === 0 && i === 0) {
           dumpHex(debug, "block_00.out[tok=0,0:32]", tokens, 0);
+        }
+        if (
+          debug &&
+          FASTWAN_DEBUG_BLOCK00 &&
+          input.stepIndex === 0 &&
+          i === 0 &&
+          !this.didDumpIntermediates
+        ) {
+          this.didDumpIntermediates = true;
+          dumpAllTaps(debug, result);
+        }
+        if (input.onStopAfterBlock00 && input.stepIndex === 0 && i === 0) {
+          debug?.("stopAfterBlock00 set - halting after block_00");
+          if (nextLoad) {
+            nextLoad.then((s) => s.release()).catch(() => {});
+            nextLoad = null;
+          }
+          input.onStopAfterBlock00();
         }
       } catch (err) {
         // Block run failed — make sure the prefetched next session is
@@ -296,4 +341,65 @@ function dumpHexF32(
   }).join(",");
   debug(`${label} f32=[${Array.from(slice).map((v) => v.toFixed(6)).join(",")}]`);
   debug(`${label} hex32=${hex}`);
+}
+
+/** Emit stats + first-32-element hex for every tensor in an ORT result
+ *  dict. Output format matches dump-reference-block-00.py --debug so the
+ *  two logs diff line-by-line. Called only when the debug graph
+ *  block_00_debug.onnx is loaded and ?debugblock00=1 is set. */
+function dumpAllTaps(
+  debug: (msg: string) => void,
+  result: Record<string, ort.Tensor>,
+): void {
+  const names = Object.keys(result);
+  debug(`block_00_debug: ${names.length} outputs`);
+  for (const name of names) {
+    const t = result[name];
+    if (t.type === "float16") {
+      const bits = copyF16Bits(t.data as ArrayBufferView);
+      const total = bits.length;
+      const f32 = f16ToF32Array(bits);
+      const { mn, mx, mean, nan, zeros } = statsF32(f32);
+      debug(
+        `stats[${name}] n=${total} min=${mn.toFixed(4)} max=${mx.toFixed(4)} ` +
+          `mean=${mean.toFixed(4)} nan=${nan} zeros=${zeros}`,
+      );
+      dumpHex(debug, `${name}[tok=0,0:32]`, bits, 0);
+    } else if (t.type === "float32") {
+      const data = t.data as Float32Array;
+      const { mn, mx, mean, nan, zeros } = statsF32(data);
+      debug(
+        `stats[${name}] n=${data.length} min=${mn.toFixed(4)} max=${mx.toFixed(4)} ` +
+          `mean=${mean.toFixed(4)} nan=${nan} zeros=${zeros}`,
+      );
+      dumpHexF32(debug, `${name}[tok=0,0:32]`, data, 0);
+    } else {
+      // int64 / int32 / bool taps from shape-math subgraphs. Print head
+      // values as ints so the format still line-diffs meaningfully.
+      const data = t.data as ArrayLike<number | bigint>;
+      const n = data.length;
+      const head = Array.from({ length: Math.min(32, n) }, (_, i) =>
+        String(data[i]),
+      );
+      debug(`stats[${name}] n=${n} dtype=${t.type}`);
+      debug(`${name}[tok=0,0:32] dtype=${t.type} ints=[${head.join(",")}]`);
+    }
+  }
+}
+
+function statsF32(arr: Float32Array | ArrayLike<number>): {
+  mn: number; mx: number; mean: number; nan: number; zeros: number;
+} {
+  let mn = Infinity, mx = -Infinity, sum = 0, nan = 0, zeros = 0;
+  const n = arr.length;
+  for (let i = 0; i < n; i++) {
+    const v = arr[i] as number;
+    if (Number.isNaN(v)) { nan++; continue; }
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+    sum += v;
+    if (v === 0) zeros++;
+  }
+  const denom = Math.max(1, n - nan);
+  return { mn, mx, mean: sum / denom, nan, zeros };
 }

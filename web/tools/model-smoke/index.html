@@ -6,6 +6,30 @@
     <title>model smoke - intabai</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
+      // Silence vite's HMR client. We run with server.hmr:false so long
+      // runs are not reloaded mid-run, but vite still injects
+      // /@vite/client. Its failed ws connection leaves this.ws undefined,
+      // and every later sendError() call blows up with
+      // "Cannot read properties of undefined (reading 'send')". We stub
+      // the ws before the client loads so send()/close() are no-ops.
+      (function () {
+        var Original = window.WebSocket;
+        window.WebSocket = function (url, protocols) {
+          if (typeof url === "string" && url.indexOf("?token=") !== -1) {
+            return {
+              readyState: 3, send: function () {}, close: function () {},
+              addEventListener: function () {}, removeEventListener: function () {},
+              dispatchEvent: function () { return true; },
+              onopen: null, onclose: null, onmessage: null, onerror: null,
+            };
+          }
+          return new Original(url, protocols);
+        };
+        for (var k in Original) { try { window.WebSocket[k] = Original[k]; } catch (e) {} }
+        window.WebSocket.prototype = Original.prototype;
+      })();
+    </script>
+    <script>
       // No-flash theme apply: read stored preference before style.css
       // loads so we never paint the wrong background. See src/shared/theme.ts.
       (function () {

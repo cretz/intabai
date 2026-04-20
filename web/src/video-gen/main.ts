@@ -16,12 +16,12 @@ import {
   generateFastwan,
   type ProgressInfo,
 } from "../fastwan/generate";
-import { FastwanStopAfterTextEncoder } from "../fastwan/generate";
+import { FastwanStopAfterBlock00 } from "../fastwan/generate";
 import { encodeFramesToMp4 } from "../fastwan/encode-mp4";
 
 interface VideoGenSettings {
   debugLog: boolean;
-  stopAfterTextEncoder: boolean;
+  stopAfterBlock00: boolean;
   seed: string;
   modelId: string;
   prompt: string;
@@ -30,7 +30,7 @@ interface VideoGenSettings {
 
 const DEFAULT_SETTINGS: VideoGenSettings = {
   debugLog: false,
-  stopAfterTextEncoder: false,
+  stopAfterBlock00: false,
   seed: "",
   modelId: "",
   prompt: "",
@@ -51,7 +51,7 @@ const modelSelect = document.getElementById("model-select") as HTMLSelectElement
 const promptInput = document.getElementById("prompt") as HTMLTextAreaElement;
 const seedInput = document.getElementById("seed-input") as HTMLInputElement;
 const debugLogCheck = document.getElementById("debug-log-check") as HTMLInputElement;
-const stopAfterTextEncoderCheck = document.getElementById("stop-after-text-encoder-check") as HTMLInputElement;
+const stopAfterBlock00Check = document.getElementById("stop-after-block-00-check") as HTMLInputElement;
 const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
 const debugLogPane = document.getElementById("debug-log-pane") as HTMLTextAreaElement;
 const generateBtn = document.getElementById("generate-btn") as HTMLButtonElement;
@@ -75,7 +75,7 @@ function loadSettings(): VideoGenSettings {
 
 function applySettings(s: VideoGenSettings): void {
   debugLogCheck.checked = s.debugLog;
-  stopAfterTextEncoderCheck.checked = s.stopAfterTextEncoder;
+  stopAfterBlock00Check.checked = s.stopAfterBlock00;
   seedInput.value = s.seed;
   promptInput.value = s.prompt;
   advancedSection.open = s.advancedOpen;
@@ -88,7 +88,7 @@ function applySettings(s: VideoGenSettings): void {
 function currentSettings(): VideoGenSettings {
   return {
     debugLog: debugLogCheck.checked,
-    stopAfterTextEncoder: stopAfterTextEncoderCheck.checked,
+    stopAfterBlock00: stopAfterBlock00Check.checked,
     seed: seedInput.value,
     modelId: modelSelect.value,
     prompt: promptInput.value,
@@ -154,7 +154,7 @@ modelSelect.addEventListener("change", () => {
 });
 seedInput.addEventListener("change", persistSettings);
 debugLogCheck.addEventListener("change", persistSettings);
-stopAfterTextEncoderCheck.addEventListener("change", persistSettings);
+stopAfterBlock00Check.addEventListener("change", persistSettings);
 advancedSection.addEventListener("toggle", persistSettings);
 
 // ---- Preview + result ------------------------------------------------------
@@ -270,6 +270,9 @@ async function onGenerate(): Promise<void> {
     return;
   }
 
+  const dumpLatentEnabled =
+    new URLSearchParams(window.location.search).get("dumplatent") === "1";
+
   currentAbort = new AbortController();
   generateBtn.disabled = true;
   cancelBtn.style.display = "";
@@ -297,12 +300,28 @@ async function onGenerate(): Promise<void> {
       prompt,
       seed,
       transformerPrecision: model.transformerPrecision,
-      stopAfterTextEncoder: settings.stopAfterTextEncoder,
+      stopAfterBlock00: settings.stopAfterBlock00,
       signal: currentAbort.signal,
       onPreview: (frames) => {
         previewSection.style.display = "";
         renderPreview(frames, 16);
       },
+      onLatentDump: dumpLatentEnabled
+        ? (label, latent, shape) => {
+            const name = `fastwan-${label}-${shape.join("x")}-fp32.bin`;
+            const ab = new ArrayBuffer(latent.byteLength);
+            new Uint8Array(ab).set(
+              new Uint8Array(latent.buffer, latent.byteOffset, latent.byteLength),
+            );
+            const blob = new Blob([ab], { type: "application/octet-stream" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            onDebug?.(`dumped ${name} (${latent.byteLength} bytes, shape ${shape.join("x")})`);
+          }
+        : undefined,
       onProgress: (info: ProgressInfo) => {
         const elapsed = performance.now() - runStart;
         // ETA only once we're into denoise - earlier stages are a tiny
@@ -326,7 +345,7 @@ async function onGenerate(): Promise<void> {
   } catch (err) {
     if (currentAbort?.signal.aborted) {
       pv.setStatus("cancelled");
-    } else if (err instanceof FastwanStopAfterTextEncoder) {
+    } else if (err instanceof FastwanStopAfterBlock00) {
       pv.setStatus("stopped (debug)");
     } else {
       const msg = err instanceof Error ? err.message : String(err);

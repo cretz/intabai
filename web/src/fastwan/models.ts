@@ -74,6 +74,76 @@ export const FASTWAN_TEXT_ENCODER_WASM =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("textwasm") === "1";
 
+/** `?textmaskmag=N` on the tool URL overrides the text encoder's fp16
+ *  additive attention-mask magnitude for padding positions. Default is
+ *  65504 (fp16 min finite). Hypothesis: WebGPU SDPA mishandles fp16
+ *  scores near the min finite value when the mask is added pre-softmax,
+ *  producing the 10-15% per-value divergence we see vs wasm. Try
+ *  `?textmaskmag=10000` (-1e4) or `?textmaskmag=1000` (-1e3). Wasm
+ *  matches PyTorch with -65504 so only WebGPU needs this. */
+export const FASTWAN_TEXT_MASK_MAG =
+  (() => {
+    if (typeof window === "undefined") return 65504;
+    const raw = new URLSearchParams(window.location.search).get("textmaskmag");
+    if (!raw) return 65504;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 65504;
+  })();
+
+/** `?transformerwasm=1` on the tool URL forces the transformer
+ *  (shell_pre + 30 blocks + shell_post) onto the wasm CPU execution
+ *  provider. Diagnostic for suspected WebGPU block kernel divergence
+ *  vs CPU ONNX. Extremely slow (hours for a full run); intended to be
+ *  paired with the "stop after block_00" checkbox for a one-block
+ *  byte-diff against scripts/dump-reference-block-00.py. */
+export const FASTWAN_TRANSFORMER_WASM =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("transformerwasm") === "1";
+
+/** `?debugblock00=1` on the tool URL swaps block_00 for block_00_debug.onnx,
+ *  which exposes every intermediate tensor as a graph output. Paired with
+ *  the "stop after block_00" checkbox and transformer.ts's per-tap hex
+ *  dump, this produces a line-per-tap log that diffs directly against
+ *  `dump-reference-block-00.py --debug`. Only meaningful in fp16 precision
+ *  (the debug graph is monolithic fp16; q4 has external data and wasn't
+ *  regenerated). */
+export const FASTWAN_DEBUG_BLOCK00 =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("debugblock00") === "1";
+
+/** `?numsteps=N` overrides the denoising step count. Defaults to 4 to
+ *  match the HF Space (KingNish/wan2-2-fast), which uses
+ *  UniPCMultistepScheduler at num_inference_steps=4. */
+export const FASTWAN_NUM_STEPS_OVERRIDE: number | null = (() => {
+  if (typeof window === "undefined") return null;
+  const raw = new URLSearchParams(window.location.search).get("numsteps");
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 20 ? n : null;
+})();
+
+/** `?flowshift=X` overrides the flow-matching shift applied to the UniPC
+ *  sigma schedule. Default 8.0 matches the HF Space; the scheduler config
+ *  file ships 5.0 but the Space overrides to 8.0 in its pipeline setup. */
+export const FASTWAN_FLOW_SHIFT: number = (() => {
+  if (typeof window === "undefined") return 8.0;
+  const raw = new URLSearchParams(window.location.search).get("flowshift");
+  if (!raw) return 8.0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 8.0;
+})();
+
+/** `?txnoopt=1` disables graph-level optimization for transformer block
+ *  sessions (shell_pre, 30 blocks, shell_post). Diagnostic: if block_00
+ *  output changes significantly, ORT-web's WebGPU EP is applying a
+ *  fusion/rewrite that produces different numerics than the CPU EP. If
+ *  output is unchanged, the bug is in a kernel, not in graph optimisation.
+ *  Precedent: `sdxl/text-encoders.ts` uses "disabled" to sidestep an
+ *  ORT-web optimizer bug. */
+export const FASTWAN_TX_NOOPT =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("txnoopt") === "1";
+
 function textEncoderLayerFile(i: number): OrtModelFile {
   const idx = String(i).padStart(2, "0");
   const subdir = TEXT_FP16 ? "text-encoder" : "text-encoder-q4f16";
@@ -135,21 +205,54 @@ function transformerBlockFile(
 ): OrtModelFile {
   const idx = String(i).padStart(2, "0");
   if (precision === "fp16") {
+    // Debug swap: ?debugblock00=1 replaces block_00 with the graph that
+    // exposes every intermediate as an output, for per-op diffing against
+    // dump-reference-block-00.py --debug. Distinct cache id so OPFS doesn't
+    // serve the stale normal block. Only block 0; other blocks stay normal.
+    if (i === 0 && FASTWAN_DEBUG_BLOCK00) {
+      // v4: switched to external-data layout. Monolithic 327 MB session
+      // create OOM'd with shell_pre (180 MB) already resident because
+      // ORT-web's wasm loader held the full proto in linear memory at
+      // init. With external data, graph proto is tiny and weights stream
+      // to GPU via the sidecar, same as regular q4 blocks.
+      // v7: adds to_k/MatMul and to_v/MatMul to the v6 tap set so we can
+      // diff K and V against CPU ORT. Still skips any tap between
+      // attn{1,2}/MatMul and attn{1,2}/MatMul_1 (score matrix is
+      // seq²·heads·fp16 ≈ 3.2 GB per tap, OOMs session create).
+      const graph = mf(
+        "tx_block_00_fp16_debug_v7",
+        "transformer/block_00_debug.onnx (fp16)",
+        "transformer/block_00_debug.onnx",
+        183_808,
+      );
+      const data = mf(
+        "tx_block_00_fp16_debug_v7_data",
+        "transformer/block_00_debug.onnx.data",
+        "transformer/block_00_debug.onnx.data",
+        327_362_560,
+      );
+      return { graph, data, dataPath: "block_00_debug.onnx.data" };
+    }
+    // Blocks have attn1 seq-chunked (N=3) to skirt the 2 GiB WebGPU
+    // maxBufferSize cliff at seq=8190 x heads=24. Chunked file is ~1.1 KB
+    // larger; cache id bumped so OPFS re-downloads.
     return mf(
-      `tx_block_${idx}_fp16`,
+      `tx_block_${idx}_fp16_chunked`,
       `transformer/block_${idx}.onnx (fp16)`,
       `transformer/block_${idx}.onnx`,
-      327_506_456,
+      327_507_628,
     );
   }
+  // Cache ids bumped to _chunked after re-quantizing from attn1-chunked fp16
+  // blocks. See notes/ort-fp16-bugs.md section 5.
   const graph = mf(
-    `tx_block_${idx}`,
+    `tx_block_${idx}_chunked`,
     `transformer/block_${idx}.onnx`,
     `transformer-q4f16/block_${idx}.onnx`,
     170_000,
   );
   const data = mf(
-    `tx_block_${idx}_data`,
+    `tx_block_${idx}_data_chunked`,
     `transformer/block_${idx}.onnx.data`,
     `transformer-q4f16/block_${idx}.onnx.data`,
     92_000_000,

@@ -52,6 +52,8 @@ import torch.nn as nn
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 from accelerate.utils import infer_auto_device_map
 
+from lib.chunk_attn1 import chunk_attn1_file
+
 
 def patch_rms_norm_for_onnx():
     """Decompose torch.nn.RMSNorm.forward into explicit ops for ONNX export.
@@ -535,6 +537,10 @@ def main():
                 },
                 dynamo=False,
             )
+            # Seq-chunk attn1 to keep Q*K^T under the 2 GiB WebGPU
+            # maxBufferSize cap. See lib/chunk_attn1.py + notes/ort-fp16-bugs.md
+            # section 5. CPU/CUDA math is unchanged.
+            chunk_attn1_file(block_path, n_chunks=3)
             size_mb = block_path.stat().st_size / 1e6
             dt = time.time() - t0
             log(f"  block {i+1}/{num_blocks} -> {block_path.name} ({size_mb:.1f} MB, {dt:.1f}s)")

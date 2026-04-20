@@ -11,7 +11,37 @@ import * as ort from "onnxruntime-web";
 import { ModelCache, type ModelFile } from "../shared/model-cache";
 import { initThemeSelect } from "../shared/theme";
 import { gaussianNoise, mulberry32 } from "../image-gen/generate-utils";
-import { f16BitsToF32, f32ToF16Array } from "../sd15/fp16";
+import { copyF16Bits, f16BitsToF32, f16ToF32Array, f32ToF16Array } from "../sd15/fp16";
+
+function dumpFp16Tensor(log: (s: string) => void, name: string, bits: Uint16Array): void {
+  const n = bits.length;
+  // Stats in f32 space for sanity.
+  let min = Infinity,
+    max = -Infinity,
+    sum = 0,
+    nan = 0,
+    zeros = 0;
+  const f32 = f16ToF32Array(bits);
+  for (let i = 0; i < n; i++) {
+    const v = f32[i];
+    if (Number.isNaN(v)) {
+      nan++;
+      continue;
+    }
+    if (v === 0) zeros++;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  const mean = sum / Math.max(1, n - nan);
+  log(
+    `stats[${name}] n=${n} min=${min.toFixed(4)} max=${max.toFixed(4)} mean=${mean.toFixed(6)} nan=${nan} zeros=${zeros}`,
+  );
+  const hex = Array.from(bits.subarray(0, 32), (b) => b.toString(16).padStart(4, "0")).join(",");
+  log(`${name}[0:32] hex=${hex}`);
+  const f32slice = Array.from(f32.subarray(0, 32), (v) => v.toFixed(4)).join(",");
+  log(`${name}[0:32] f32=[${f32slice}]`);
+}
 
 {
   const sel = document.getElementById("theme-select");
@@ -36,6 +66,13 @@ interface Component {
    * sessionOptions.externalData with the path the graph references.
    */
   externalData?: { file: ModelFile; pathInGraph: string };
+  /**
+   * Override the default "all" graph optimization level. Use "disabled" when
+   * exposing intermediate graph outputs so ORT-web's memory planner doesn't
+   * promote every live MatMul output to a persistent buffer and OOM at
+   * session create (Fastwan block_00_debug.onnx symptom).
+   */
+  graphOptLevel?: "disabled" | "basic" | "extended" | "all";
   /**
    * If set, after session.create succeeds, also try one dummy session.run
    * with zero tensors at these input shapes. This is what catches WebGPU
@@ -66,7 +103,19 @@ interface Component {
        *  (e.g. VAE decoding zero latent yields a gray frame with no useful
        *  signal about whether the decoder is working). */
       gaussian?: boolean;
+      /** Deterministic fp16 fill: val[i] = sin(i * freq + offset) * amplitude,
+       *  cast fp32 -> fp16. Matches the fill in
+       *  web/scripts/probe-attn-matmul.py so browser and Python see the
+       *  same bytes. Only meaningful for dtype: "float16".
+       *  Default freq/amp if only `sinOffset` provided: freq=0.0017 amp=8.0. */
+      sinFill?: { offset: number; freq?: number; amplitude?: number };
+      /** If true, dump stats + first-32-hex of this input after building
+       *  it (for parity diff with Python). */
+      dumpInput?: boolean;
     }>;
+    /** If true, after dummy run, iterate outputs and emit stats + first-32-hex
+     *  per output so we can diff against a CPU reference log. */
+    dumpOutputs?: boolean;
     /** If set, render one frame of the first matching output to the
      *  #smoke-output-canvas. Shape assumption: [B, F, C, H, W] fp16 (NTCHW),
      *  F and C read from the spec below. Use to visually confirm a VAE is
@@ -751,6 +800,96 @@ const CANDIDATES: Candidate[] = [
     ],
   },
   {
+    id: "fastwan-block-00-debug",
+    label: "FastWan block_00_debug (10 exposed taps; graphOpt disabled to dodge session OOM)",
+    components: [
+      {
+        name: "block_00_debug full-shape (8190 tokens, graphOpt=disabled)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/transformer/block_00_debug.onnx",
+          183_706,
+        ),
+        externalData: {
+          file: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            "onnx/transformer/block_00_debug.onnx.data",
+            327_362_560,
+          ),
+          pathInGraph: "block_00_debug.onnx.data",
+        },
+        graphOptLevel: "disabled",
+        dummyRun: {
+          inputs: [
+            { match: ["hidden_states"], shape: [1, 8190, 3072], dtype: "float16" },
+            { match: ["encoder_hidden_states"], shape: [1, 512, 3072], dtype: "float16" },
+            { match: ["timestep_proj"], shape: [1, 8190, 6, 3072], dtype: "float16" },
+            { match: ["freqs_cos"], shape: [1, 8190, 1, 128], dtype: "float32" },
+            { match: ["freqs_sin"], shape: [1, 8190, 1, 128], dtype: "float32" },
+          ],
+          repeats: 1,
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-attn-probe",
+    label: "FastWan attn probe (isolated softmax(Q.Kt/sqrt)·V at heads=24, d=128, varying seq)",
+    components: [
+      // Minimal ONNX: Transpose(K) -> MatMul -> Mul(scale) -> Softmax -> MatMul(.V).
+      // Inputs filled deterministically via sinFill so browser + Python
+      // see identical fp16 bytes. Diff first-32 hex of output against the
+      // hex printed by web/scripts/probe-attn-matmul.py.
+      // Intermediate scores buffer: heads*seq^2*2 bytes.
+      //   seq=1024:  48 MB  (well within maxBufferSize)
+      //   seq=2048: 192 MB
+      //   seq=4096: 768 MB  (may OOM on mobile)
+      //   seq=8190: 3.22 GB (exceeds typical maxBufferSize; skip until others prove bug)
+      ...([
+        { seq: 1024, heads: 24, tag: "" },
+        { seq: 2048, heads: 24, tag: "" },
+        { seq: 4096, heads: 24, tag: "" },
+        { seq: 8190, heads: 1, tag: "-h1" },
+        { seq: 8190, heads: 24, tag: "-h24" },
+      ] as const).map(({ seq, heads, tag }) => ({
+        name: `probe seq=${seq} heads=${heads} (intermediate scores ~${((heads * seq * seq * 2) / 1024 / 1024).toFixed(0)} MB)`,
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          `onnx/probe/probe-${seq}${tag}.onnx`,
+          2048,
+        ),
+        graphOptLevel: "disabled" as const,
+        dummyRun: {
+          inputs: [
+            {
+              match: ["q"],
+              shape: [1, heads, seq, 128],
+              dtype: "float16" as const,
+              sinFill: { offset: 0.0 },
+            },
+            {
+              match: ["k"],
+              shape: [1, heads, seq, 128],
+              dtype: "float16" as const,
+              sinFill: { offset: 1.1 },
+            },
+            {
+              match: ["v"],
+              shape: [1, heads, seq, 128],
+              dtype: "float16" as const,
+              sinFill: { offset: 2.2 },
+            },
+          ],
+          dumpOutputs: true,
+          repeats: 1,
+        },
+      })),
+    ],
+  },
+  {
     id: "fastwan-text-encoder-q4",
     label: "FastWan 2.2 text encoder q4f16 (UMT5-XXL layer_00 + shell_post)",
     components: [
@@ -993,8 +1132,11 @@ async function tryComponent(c: Component) {
   let revokeData = () => {};
   const sessionOptions: ort.InferenceSession.SessionOptions = {
     executionProviders: providers(),
-    graphOptimizationLevel: "all",
+    graphOptimizationLevel: c.graphOptLevel ?? "all",
   };
+  if (c.graphOptLevel) {
+    log(`graphOptimizationLevel: ${c.graphOptLevel}`);
+  }
   if (c.externalData) {
     const { url, revoke } = await cache.loadFileAsBlobUrl(c.externalData.file);
     revokeData = revoke;
@@ -1066,6 +1208,16 @@ async function tryComponent(c: Component) {
           }
           continue;
         }
+        if (spec.sinFill) {
+          const freq = spec.sinFill.freq ?? 0.0017;
+          const amp = spec.sinFill.amplitude ?? 8.0;
+          const off = spec.sinFill.offset;
+          const f32 = new Float32Array(len);
+          for (let i = 0; i < len; i++) f32[i] = Math.fround(Math.sin(i * freq + off) * amp);
+          feeds[inputName] = new ort.Tensor("float16", f32ToF16Array(f32), spec.shape);
+          if (spec.dumpInput) dumpFp16Tensor(log, inputName, feeds[inputName].data as Uint16Array);
+          continue;
+        }
         if (spec.dtype) {
           feeds[inputName] = buildTensor(spec.dtype, len, spec.shape, spec.fill);
           continue;
@@ -1097,6 +1249,17 @@ async function tryComponent(c: Component) {
         }
         if (c.dummyRun.renderOutput && lastResults) {
           renderOutputFrame(c.dummyRun.renderOutput, lastResults);
+        }
+        if (c.dummyRun.dumpOutputs && lastResults) {
+          for (const name of Object.keys(lastResults)) {
+            const t = lastResults[name] as ort.Tensor;
+            if (t.type === "float16") {
+              const bits = copyF16Bits(t.data as ArrayBufferView);
+              dumpFp16Tensor(log, name, bits);
+            } else {
+              log(`  dumpOutputs: ${name} type=${t.type} (fp16 dump only)`);
+            }
+          }
         }
       } catch (err) {
         const msg = (err as Error).message;

@@ -107,14 +107,14 @@
           </span>
         </div>
         <div class="field" style="margin-top: 6px">
-          <input type="checkbox" id="stop-after-text-encoder-check" />
+          <input type="checkbox" id="stop-after-block-00-check" />
           <span style="flex: 1">
-            <label for="stop-after-text-encoder-check">stop after text encoder</label>
+            <label for="stop-after-block-00-check">stop after block_00</label>
             <small>
-              - halt the run right after the text encoder emits its stats
-              and per-token hex dumps. pair with debug log on and optionally
-              ?textwasm=1 (force wasm EP) for a webgpu-vs-cpu byte diff
-              without waiting ~10 min for the transformer.
+              - halt the run after block_00 executes at step 1 and emits
+              its hex dump. pair with debug log on and ?textwasm=1 (known-
+              good text embeds) for a webgpu-vs-cpu byte diff of block_00
+              output without waiting for the remaining 89 block iterations.
             </small>
           </span>
         </div>

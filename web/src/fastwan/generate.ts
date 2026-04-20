@@ -45,53 +45,37 @@ import {
 import {
   FASTWAN_EMBEDDING_Q8_FILE,
   FASTWAN_EMBEDDING_SCALES_FILE,
+  FASTWAN_FLOW_SHIFT,
+  FASTWAN_NUM_STEPS_OVERRIDE,
   FASTWAN_TEXT_ENCODER_LAYERS,
   FASTWAN_TEXT_ENCODER_SHELL_POST,
   FASTWAN_VAE_FILE,
   FASTWAN_TEXT_ENCODER_WASM,
+  FASTWAN_TEXT_MASK_MAG,
+  FASTWAN_TRANSFORMER_WASM,
   fastwanTransformerFiles,
   type FastwanTransformerPrecision,
 } from "./models";
+import { UniPCFlowScheduler } from "./unipc-scheduler";
 
-/** Thrown by `generate()` when `stopAfterTextEncoder` is set, after the
- *  text encoder finishes and its stats + hex dumps are emitted. Lets us
- *  inspect text encoder output (e.g. for a wasm-vs-webgpu diff) without
- *  waiting for the ~10-min transformer loop. The UI catches this and
- *  treats it as a clean early exit, not an error. */
-export class FastwanStopAfterTextEncoder extends Error {
+/** Thrown by `generate()` when `stopAfterBlock00` is set, after block_00
+ *  runs at step 1 and its hex dump is emitted. Lets us byte-diff block_00
+ *  output against the Python CPU ONNX reference
+ *  (`scripts/dump-reference-block-00.py`) without waiting for the full
+ *  ~10-min block loop. The UI catches this and treats it as a clean early
+ *  exit, not an error. */
+export class FastwanStopAfterBlock00 extends Error {
   constructor() {
-    super("stopped after text encoder (debug)");
-    this.name = "FastwanStopAfterTextEncoder";
+    super("stopped after block_00 (debug)");
+    this.name = "FastwanStopAfterBlock00";
   }
 }
 
-/** DMD-distilled timesteps. Fixed training hyperparameter.
- *  Source: FastVideo/fastvideo/configs/pipelines/wan.py:130-132
- *  (`FastWan2_2_TI2V_5B_Config.dmd_denoising_steps = [1000, 757, 522]`).
- *  Three steps, not four — the `[1000, 750, 500, 250]` schedule belongs
- *  to the Wan 2.2 T2V A14B config (line 141), a different model. The
- *  model is optimized to denoise from exactly these sigma levels; using
- *  any other schedule produces a prompt-agnostic mean output. */
-const FASTWAN_DMD_TIMESTEPS = [1000, 757, 522] as const;
-export const FASTWAN_NUM_STEPS = FASTWAN_DMD_TIMESTEPS.length;
 export const FASTWAN_OUTPUT_FPS = 16;
 
-/** Sigma lookup for a DMD timestep. The DMD timesteps [1000, 757, 522] are
- *  already stored in *post-shift* coordinates on the scheduler: at init,
- *  `FlowMatchEulerDiscreteScheduler(shift=8.0)` fills
- *  `self.timesteps = sigmas_shifted * 1000` and `self.sigmas = sigmas_shifted`,
- *  so `self.sigmas[i] == self.timesteps[i] / 1000` always. `DmdDenoisingStage`
- *  never calls `set_timesteps`, so `pred_noise_to_pred_video` and `add_noise`
- *  just do `argmin(|scheduler.timesteps - t|)` and return `sigma = t/1000`.
- *  See `FastVideo/fastvideo/models/utils.py:pred_noise_to_pred_video` and
- *  `fastvideo/models/schedulers/scheduling_flow_match_euler_discrete.py`.
- *  Applying the shift formula (`8*s/(1+7*s)`) on top of these already-shifted
- *  timesteps double-counts the shift and was the source of the confetti
- *  output at steps 2/3 (matched at t=1000 because the formula is the identity
- *  there, diverged at 757 and 522). */
-function flowSigma(t: number): number {
-  return t / 1000;
-}
+/** Active denoising step count. Default 4 matches KingNish/wan2-2-fast
+ *  (UniPCMultistepScheduler at num_inference_steps=4). */
+export const FASTWAN_NUM_STEPS = FASTWAN_NUM_STEPS_OVERRIDE ?? 4;
 
 /** Per-channel latent mean/std for Wan 2.2 (48 channels). Identical to
  *  `notes/models/fastwan/source/vae/config.json` and to the hardcoded
@@ -172,17 +156,24 @@ export interface GenerateOptions {
    *  because the scheduler / block loop produce a lot of lines. */
   onDebug?: (msg: string) => void;
   signal?: AbortSignal;
-  /** Debug: throw `FastwanStopAfterTextEncoder` right after the text
-   *  encoder finishes and its stats/hex dumps are emitted. Lets us
-   *  sanity-check text embeds (e.g. wasm-vs-webgpu diff for the ongoing
-   *  confetti investigation) without waiting for the ~10-min transformer
-   *  loop. */
-  stopAfterTextEncoder?: boolean;
+  /** Debug: throw `FastwanStopAfterBlock00` right after block_00 runs at
+   *  step 1 and its hex dump is emitted. Lets us byte-diff block_00
+   *  output against the Python CPU ONNX reference
+   *  (`scripts/dump-reference-block-00.py`) without waiting for the full
+   *  ~10-min block loop (block_00 alone takes ~6-7 min to load + run on
+   *  the WebGPU EP). */
+  stopAfterBlock00?: boolean;
   /** Optional preview hook. When set, the in-flight latent is VAE-decoded
    *  after each non-final denoising step and the resulting frames are
    *  delivered here. Adds ~2-3 s per step to the run, huge UX win on
    *  13-minute generations. `stepIndex` is 0-based. */
   onPreview?: (frames: ImageBitmap[], stepIndex: number) => void;
+  /** Debug dump hook. When set, the pipeline hands off key intermediate
+   *  latents as raw fp32 (NCTHW layout [1, 48, 21, 30, 52] for the final
+   *  latent). Used by the offline VAE-compare flow: save to disk, feed
+   *  into `decode-latent-compare.py` to diff LightTAE vs the full Wan VAE
+   *  without re-running the 14-min transformer. */
+  onLatentDump?: (label: string, latent: Float32Array, shape: number[]) => void;
 }
 
 export interface GenerateResult {
@@ -276,6 +267,9 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     ? ["wasm"]
     : ["webgpu", "wasm"];
   log(`text encoder providers: ${textEncoderProviders.join(",")}`);
+  if (FASTWAN_TEXT_MASK_MAG !== 65504) {
+    log(`text encoder mask magnitude: -${FASTWAN_TEXT_MASK_MAG} (override)`);
+  }
   const textEncoder = new TextEncoder(
     cache,
     {
@@ -326,10 +320,6 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       dumpRow(`text_embeds[tok=${t},0:32]`, t * 4096);
     }
   }
-  if (opts.stopAfterTextEncoder) {
-    log("stopAfterTextEncoder set - halting before noise init");
-    throw new FastwanStopAfterTextEncoder();
-  }
   // ---- 4. Noise init -------------------------------------------------------
   // Latent [1, 48, 21, 30, 52], N=48*21*30*52=1,572,480 elements.
   const latentLen =
@@ -343,12 +333,19 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
 
   // ---- 5. Denoising loop ---------------------------------------------------
   const txBase = W_TOKENIZE + W_EMBED + W_TEXT_ENC;
-  const transformer = new Transformer(cache, {
-    shellPre: txFiles.shellPre,
-    blocks: txFiles.blocks,
-    shellPost: txFiles.shellPost,
-  });
+  const transformer = new Transformer(
+    cache,
+    {
+      shellPre: txFiles.shellPre,
+      blocks: txFiles.blocks,
+      shellPost: txFiles.shellPost,
+    },
+    FASTWAN_TRANSFORMER_WASM ? ["wasm"] : ["webgpu", "wasm"],
+  );
   log(`transformer precision: ${transformerPrecision}`);
+  if (FASTWAN_TRANSFORMER_WASM) {
+    log("transformer: forced to wasm CPU EP (?transformerwasm=1)");
+  }
   progress(txBase, "denoise", "loading transformer shells");
   await transformer.load();
   throwIfAborted(signal);
@@ -388,17 +385,33 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     );
   };
 
+  // UniPCMultistepScheduler with flow sigmas + predict_x0 + flow_prediction
+  // + bh2. Matches the HF Space (KingNish/wan2-2-fast) exactly: 4 steps,
+  // flow_shift=8, solver_order=2. See unipc-scheduler.ts.
+  const scheduler = new UniPCFlowScheduler({
+    numInferenceSteps: FASTWAN_NUM_STEPS,
+    flowShift: FASTWAN_FLOW_SHIFT,
+    solverOrder: 2,
+    lowerOrderFinal: true,
+  });
+  log(
+    `scheduler=unipc_flow_bh2 num_steps=${FASTWAN_NUM_STEPS} ` +
+      `flow_shift=${FASTWAN_FLOW_SHIFT} ` +
+      `sigmas=[${Array.from(scheduler.sigmas).map((s) => s.toFixed(4)).join(",")}]`,
+  );
+
   try {
     for (let step = 0; step < FASTWAN_NUM_STEPS; step++) {
       throwIfAborted(signal);
-      const timestep = FASTWAN_DMD_TIMESTEPS[step];
-      const sigmaCur = flowSigma(timestep);
+      const sigmaCur = scheduler.sigmas[step];
+      // Transformer's shell_pre takes integer timestep in [0, 1000]. With
+      // flow sigmas sigma == t/1000, so timestep = round(sigma*1000).
+      const timestep = Math.round(sigmaCur * 1000);
       const isFinal = step + 1 === FASTWAN_NUM_STEPS;
-      const sigmaNext = isFinal ? 0 : flowSigma(FASTWAN_DMD_TIMESTEPS[step + 1]);
       const stepStart = performance.now();
       log(
         `step ${step + 1}/${FASTWAN_NUM_STEPS} starting, timestep=${timestep} ` +
-          `sigma=${sigmaCur.toFixed(4)} sigma_next=${sigmaNext.toFixed(4)}`,
+          `sigma=${sigmaCur.toFixed(4)}`,
       );
       const latentFp16 = f32ToF16Array(latentFp32);
 
@@ -410,6 +423,11 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
           stepIndex: step,
           onDebug,
           onStatsFp16: statsFp16Bits,
+          onStopAfterBlock00: opts.stopAfterBlock00
+            ? () => {
+                throw new FastwanStopAfterBlock00();
+              }
+            : undefined,
         },
         (sIdx, bDone, bTotal) => {
           const withinStep = bDone / bTotal;
@@ -426,28 +444,17 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       const noisePredFp32 = f16ToF32Array(noisePredFp16);
       statsFp32(`noise_pred[step${step + 1}]`, noisePredFp32);
 
-      // DMD direct x0 prediction: x0 = x_t - sigma_t * noise_pred.
-      // Reference: FastVideo/fastvideo/models/utils.py pred_noise_to_pred_video.
+      // Direct x0 estimate for the preview path (UniPC's corrector mutates
+      // sample internally; we compute x0 explicitly here so previews decode
+      // the current clean-image estimate rather than the partially-denoised
+      // latent). flow_prediction: x0 = x_t - sigma_t * v.
       const x0 = new Float32Array(latentFp32.length);
       for (let i = 0; i < x0.length; i++) {
         x0[i] = latentFp32[i] - sigmaCur * noisePredFp32[i];
       }
       statsFp32(`x0[step${step + 1}]`, x0);
 
-      if (isFinal) {
-        latentFp32 = x0;
-      } else {
-        // Flow matching add_noise at the next timestep:
-        //   x = (1 - sigma_next) * x0 + sigma_next * fresh_noise.
-        // Same seeded RNG as the initial noise, so seeds are reproducible,
-        // but a separate draw from the mulberry32 stream (state advances).
-        const freshNoise = gaussianNoise(latentFp32.length, rand);
-        const next = new Float32Array(latentFp32.length);
-        for (let i = 0; i < next.length; i++) {
-          next[i] = (1 - sigmaNext) * x0[i] + sigmaNext * freshNoise[i];
-        }
-        latentFp32 = next;
-      }
+      latentFp32 = scheduler.step(noisePredFp32, latentFp32);
       statsFp32(`latent[after step${step + 1}]`, latentFp32);
       log(`step ${step + 1} done in ${(performance.now() - stepStart).toFixed(0)} ms`);
 
@@ -484,6 +491,14 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   const vaeStart = performance.now();
   try {
     statsFp32("vae_in_latent (normalized, pre-denorm)", latentFp32);
+    const latentShape = [
+      1,
+      FASTWAN_LATENT_CHANNELS,
+      FASTWAN_LATENT_FRAMES,
+      FASTWAN_LATENT_H,
+      FASTWAN_LATENT_W,
+    ];
+    opts.onLatentDump?.("final_latent_normalized", latentFp32, latentShape);
     const denormalized = denormalizeLatent(
       latentFp32,
       FASTWAN_LATENT_CHANNELS,
@@ -492,6 +507,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       FASTWAN_LATENT_W,
     );
     statsFp32("vae_in_latent (denormalized, post x*std+mean)", denormalized);
+    opts.onLatentDump?.("final_latent_denormalized", denormalized, latentShape);
     const transposed = transposeCT(
       denormalized,
       FASTWAN_LATENT_CHANNELS,
