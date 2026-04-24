@@ -56,6 +56,14 @@ function dumpFp16Tensor(log: (s: string) => void, name: string, bits: Uint16Arra
 // in the session options below.
 ort.env.wasm.numThreads = 1;
 
+// ?ortverbose=1 raises ORT-web log level so op-level dispatch traces appear in
+// the console. Useful for locating the last op before a WebGPU device-lost /
+// TDR: the final "[V:...]" line identifies which kernel was running.
+if (new URLSearchParams(location.search).get("ortverbose") === "1") {
+  ort.env.logLevel = "verbose";
+}
+
+
 interface Component {
   /** Display name in the log. */
   name: string;
@@ -112,6 +120,11 @@ interface Component {
       /** If true, dump stats + first-32-hex of this input after building
        *  it (for parity diff with Python). */
       dumpInput?: boolean;
+      /** If set, reuse a tensor produced by a previous component in the
+       *  same run (output name matched by this substring). Lets us chain
+       *  e.g. decoder_init's cache_out_NN into decoder_step's cache_in_NN
+       *  so the step runs against real signal rather than zeros. */
+      fromPrevOutput?: string;
     }>;
     /** If true, after dummy run, iterate outputs and emit stats + first-32-hex
      *  per output so we can diff against a CPU reference log. */
@@ -567,6 +580,390 @@ const CANDIDATES: Candidate[] = [
             { match: ["encoder_hidden_state"], shape: [1, 77, 2048] },
             { match: ["text_embeds"], shape: [1, 1280] },
             { match: ["time_ids"], shape: [1, 6] },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-vae-kl",
+    label: "FastWan 2.2 full AutoencoderKLWan decoder (streaming, local, 2.2 GB)",
+    components: (() => {
+      // The full 3D-causal-conv VAE. Exported as two ONNX graphs (init,
+      // step) that share a 32-tensor cache I/O contract. Smoke runs each
+      // with the exact cache shapes from the export probe (see
+      // notes/export-vae-kl-streaming-init.log, slot 00..31).
+      const CACHE_SHAPES: number[][] = [
+        [1, 48, 2, 30, 52],
+        ...Array(11).fill([1, 1024, 2, 30, 52]),
+        ...Array(7).fill([1, 1024, 2, 60, 104]),
+        [1, 1024, 2, 120, 208],
+        ...Array(5).fill([1, 512, 2, 120, 208]),
+        [1, 512, 2, 240, 416],
+        ...Array(6).fill([1, 256, 2, 240, 416]),
+      ];
+      const cacheInputs = CACHE_SHAPES.map((shape, i) => {
+        const nn = i.toString().padStart(2, "0");
+        return {
+          match: [`cache_in_${nn}`],
+          shape,
+          dtype: "float16" as const,
+          // Chain init's cache_out_NN into step's cache_in_NN so the step
+          // runs against real signal rather than zeros. Falls back to zeros
+          // if init wasn't run (e.g. component filter = step only).
+          fromPrevOutput: `cache_out_${nn}`,
+        };
+      });
+      return [
+        {
+          name: "decoder_init (frame 0: latent -> 1 frame + 32 caches, 1.1 GB, Conv2D-decomposed)",
+          graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/decoder_init.onnx", 1117366418),
+          dummyRun: {
+            dtype: "float16" as const,
+            inputs: [
+              { match: ["latent"], shape: [1, 48, 1, 30, 52], gaussian: true },
+            ],
+            dumpOutputs: true,
+          },
+        },
+        {
+          name: "decoder_step (frame 1+: latent + 32 caches -> 4 frames + 32 caches, 1.1 GB, Conv2D-decomposed)",
+          graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/decoder_step.onnx", 1110666229),
+          dummyRun: {
+            dtype: "float16" as const,
+            inputs: [
+              { match: ["latent"], shape: [1, 48, 1, 30, 52], gaussian: true },
+              ...cacheInputs,
+            ],
+            dumpOutputs: true,
+          },
+        },
+      ];
+    })(),
+  },
+  {
+    id: "fastwan-vae-kl-split-init",
+    label:
+      "FastWan 2.2 full AutoencoderKLWan decoder_init, 34-way halved-resnet split (TDR test, local, 1.1 GB)",
+    components: (() => {
+      // 34-way sub-graphs produced by split-fastwan-vae-decoder.py --preset fine40.
+      // Each resnet is cut at its conv1/Conv output, so one session.run covers
+      // only one Conv3D + norm/nonlinearity (half a resnet). The 20-way split
+      // still TDR'd on mid_block resnets (5.5s each at the TDR edge); halving
+      // drops each resnet half to ~2-3s, comfortably under the watchdog.
+      type Part = {
+        name: string;
+        sizeBytes: number;
+        input: string;
+        output: string;
+        extraInput?: string;
+      };
+      const parts: Part[] = [
+        { name: "part_00_pre", sizeBytes: 2669148, input: "latent", output: "/decoder/conv_in/Conv_output_0" },
+        { name: "part_01_mid_r0_a", sizeBytes: 56638207, input: "/decoder/conv_in/Conv_output_0", output: "/decoder/mid_block/resnets.0/conv1/Conv_output_0" },
+        { name: "part_01_mid_r0_b", sizeBytes: 56638737, input: "/decoder/mid_block/resnets.0/conv1/Conv_output_0", output: "/decoder/mid_block/resnets.0/Add_output_0", extraInput: "/decoder/conv_in/Conv_output_0" },
+        { name: "part_03_mid_attn", sizeBytes: 8430181, input: "/decoder/mid_block/resnets.0/Add_output_0", output: "/decoder/mid_block/attentions.0/Add_1_output_0" },
+        { name: "part_04_mid_r1_a", sizeBytes: 56638326, input: "/decoder/mid_block/attentions.0/Add_1_output_0", output: "/decoder/mid_block/resnets.1/conv1/Conv_output_0" },
+        { name: "part_04_mid_r1_b", sizeBytes: 56638865, input: "/decoder/mid_block/resnets.1/conv1/Conv_output_0", output: "/decoder/mid_block/resnets.1/Add_output_0", extraInput: "/decoder/mid_block/attentions.0/Add_1_output_0" },
+        { name: "part_06_up0_r0_a", sizeBytes: 56638630, input: "/decoder/mid_block/resnets.1/Add_output_0", output: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0" },
+        { name: "part_06_up0_r0_b", sizeBytes: 56639182, input: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.0/Add_output_0", extraInput: "/decoder/mid_block/resnets.1/Add_output_0" },
+        { name: "part_08_up0_r1_a", sizeBytes: 56638636, input: "/decoder/up_blocks.0/resnets.0/Add_output_0", output: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0" },
+        { name: "part_08_up0_r1_b", sizeBytes: 56639188, input: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.0/resnets.0/Add_output_0" },
+        { name: "part_10_up0_r2_a", sizeBytes: 56638636, input: "/decoder/up_blocks.0/resnets.1/Add_output_0", output: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0" },
+        { name: "part_10_up0_r2_b", sizeBytes: 56639188, input: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.0/resnets.1/Add_output_0" },
+        { name: "part_12_up0_upsample", sizeBytes: 18909499, input: "/decoder/up_blocks.0/resnets.2/Add_output_0", output: "/decoder/up_blocks.0/Add_output_0", extraInput: "/decoder/mid_block/resnets.1/Add_output_0" },
+        { name: "part_13_up1_r0_a", sizeBytes: 56638648, input: "/decoder/up_blocks.0/Add_output_0", output: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0" },
+        { name: "part_13_up1_r0_b", sizeBytes: 56639172, input: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.0/Add_output_0" },
+        { name: "part_15_up1_r1_a", sizeBytes: 56638636, input: "/decoder/up_blocks.1/resnets.0/Add_output_0", output: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0" },
+        { name: "part_15_up1_r1_b", sizeBytes: 56639188, input: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.1/resnets.0/Add_output_0" },
+        { name: "part_17_up1_r2_a", sizeBytes: 56638636, input: "/decoder/up_blocks.1/resnets.1/Add_output_0", output: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0" },
+        { name: "part_17_up1_r2_b", sizeBytes: 56639188, input: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.1/resnets.1/Add_output_0" },
+        { name: "part_19_up1_upsample", sizeBytes: 18909554, input: "/decoder/up_blocks.1/resnets.2/Add_output_0", output: "/decoder/up_blocks.1/Add_output_0", extraInput: "/decoder/up_blocks.0/Add_output_0" },
+        { name: "part_20_up2_r0_a", sizeBytes: 28326072, input: "/decoder/up_blocks.1/Add_output_0", output: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0" },
+        { name: "part_20_up2_r0_b", sizeBytes: 15224930, input: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.1/Add_output_0" },
+        { name: "part_22_up2_r1_a", sizeBytes: 14169260, input: "/decoder/up_blocks.2/resnets.0/Add_output_0", output: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0" },
+        { name: "part_22_up2_r1_b", sizeBytes: 14169812, input: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.2/resnets.0/Add_output_0" },
+        { name: "part_24_up2_r2_a", sizeBytes: 14169260, input: "/decoder/up_blocks.2/resnets.1/Add_output_0", output: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0" },
+        { name: "part_24_up2_r2_b", sizeBytes: 14169812, input: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.2/resnets.1/Add_output_0" },
+        { name: "part_26_up2_upsample", sizeBytes: 4750922, input: "/decoder/up_blocks.2/resnets.2/Add_output_0", output: "/decoder/up_blocks.2/Add_output_0", extraInput: "/decoder/up_blocks.1/Add_output_0" },
+        { name: "part_27_up3_r0_a", sizeBytes: 7090872, input: "/decoder/up_blocks.2/Add_output_0", output: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0" },
+        { name: "part_27_up3_r0_b", sizeBytes: 3820130, input: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.2/Add_output_0" },
+        { name: "part_29_up3_r1_a", sizeBytes: 3551404, input: "/decoder/up_blocks.3/resnets.0/Add_output_0", output: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0" },
+        { name: "part_29_up3_r1_b", sizeBytes: 3551956, input: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.3/resnets.0/Add_output_0" },
+        { name: "part_31_up3_r2_a", sizeBytes: 3551404, input: "/decoder/up_blocks.3/resnets.1/Add_output_0", output: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0" },
+        { name: "part_31_up3_r2_b", sizeBytes: 3551956, input: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.3/resnets.1/Add_output_0" },
+        { name: "part_33_tail", sizeBytes: 32130432, input: "/decoder/up_blocks.3/resnets.2/Add_output_0", output: "frames" },
+      ];
+      return parts.map((p, i) => {
+        const inputs: Array<{ match: string[]; shape: number[]; gaussian?: boolean; fromPrevOutput?: string }> = [
+          i === 0
+            ? { match: [p.input], shape: [1, 48, 1, 30, 52], gaussian: true }
+            : { match: [p.input], shape: [], fromPrevOutput: p.input },
+        ];
+        if (p.extraInput) {
+          inputs.push({ match: [p.extraInput], shape: [], fromPrevOutput: p.extraInput });
+        }
+        return {
+          name: `decoder_init ${p.name}`,
+          graph: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            `onnx/vae/decoder_init_${p.name}.onnx`,
+            p.sizeBytes,
+          ),
+          dummyRun: {
+            dtype: "float16" as const,
+            inputs,
+          },
+        };
+      });
+    })(),
+  },
+  {
+    id: "fastwan-part-13a-pre-conv-tiled",
+    label:
+      "FastWan part_13a: pre + 6 Conv tiles across sessions (TDR fix test)",
+    components: (() => {
+      const tiles = Array.from({ length: 6 }, (_, i) => ({
+        name: `part_13a_conv tile ${i + 1}/6 (H=10 slice)`,
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          `onnx/vae/decoder_init_part_13_up1_r0_a_conv_tile${i}of6.onnx`,
+          56625890,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [
+            {
+              match: ["/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0"],
+              shape: [],
+              fromPrevOutput:
+                "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
+            },
+          ],
+        },
+      }));
+      return [
+        {
+          name: "part_13a_pre (RMSNorm+SiLU+Pad)",
+          graph: f(
+            "fastwan",
+            LOCAL_FASTWAN,
+            "onnx/vae/decoder_init_part_13_up1_r0_a_pre.onnx",
+            9506,
+          ),
+          dummyRun: {
+            dtype: "float16" as const,
+            inputs: [
+              {
+                match: ["/decoder/up_blocks.0/Add_output_0"],
+                shape: [1, 1024, 1, 60, 104],
+                gaussian: true,
+              },
+            ],
+          },
+        },
+        ...tiles,
+      ];
+    })(),
+  },
+  {
+    id: "fastwan-part-13a-pre-conv-split",
+    label:
+      "FastWan part_13a split at Pad (_pre then _conv, separate sessions, TDR fix test)",
+    // Part_13a TDRs standalone because ~18 pre-Conv ops + one big Conv3D all
+    // run inside one session.run, so cumulative GPU time exceeds Windows D3D12
+    // TDR (~2-3s). Splitting at the Pad output into two session.runs forces a
+    // GPU idle between them (mapAsync drains the queue at session boundary),
+    // resetting the TDR clock. Probe A proved the Conv alone is under budget
+    // at this shape; the pre side is ~18 cheap element-wise ops. If both pass,
+    // the fix generalizes to every half-resnet up1 component (60x104). Up2 and
+    // up3 will still need per-Conv tile-across-sessions on top.
+    components: [
+      {
+        name: "part_13a_pre (RMSNorm+SiLU+Pad)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/vae/decoder_init_part_13_up1_r0_a_pre.onnx",
+          9506,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [
+            {
+              match: ["/decoder/up_blocks.0/Add_output_0"],
+              shape: [1, 1024, 1, 60, 104],
+              gaussian: true,
+            },
+          ],
+        },
+      },
+      {
+        name: "part_13a_conv (Conv3D 1024->1024)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/vae/decoder_init_part_13_up1_r0_a_conv.onnx",
+          56625941,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [
+            {
+              match: ["/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0"],
+              shape: [],
+              fromPrevOutput:
+                "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-part-13a-standalone",
+    label:
+      "FastWan part_13a standalone (real op chain + weights, random input, cumulative-TDR test, 54 MB)",
+    // Probe A (just Conv3D, 1024->1024 60x104) ran clean standalone. Part_13a
+    // in the 34-way split (same Conv + RMS-norm + SiLU + Pad + Slice) TDRs when
+    // chained. Running part_13a alone with random input isolates: if this TDRs,
+    // the delta vs probe A is purely the non-Conv ops adding cumulative GPU
+    // time within one session.run -> fix is splitting to one Conv per session.
+    // If clean, something about prior-part activations or cross-session state
+    // is implicated instead.
+    components: [
+      {
+        name: "part_13a standalone (random input)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/vae/decoder_init_part_13_up1_r0_a.onnx",
+          56638648,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [
+            {
+              match: ["/decoder/up_blocks.0/Add_output_0"],
+              shape: [1, 1024, 1, 60, 104],
+              gaussian: true,
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: "fastwan-conv3d-chain-3x",
+    label: "FastWan Conv3D chain 3x n=5 sequential (cumulative-submit TDR test)",
+    // Three separate sessions of chain-n=5. Each session.run is ~9s wall on
+    // its own; between them JS awaits, letting the GPU queue drain. If the
+    // real VAE TDR is cumulative-within-one-submit, 3 sequential runs should
+    // be clean (27s of compute but split across 3 drain boundaries). If they
+    // still TDR, the theory is wrong and something else is in play.
+    components: Array.from({ length: 3 }, (_, i) => ({
+      name: `Conv3D chain n=5 run ${i + 1}/3 (88 Gop x 5, separate session)`,
+      graph: f(
+        "fastwan",
+        LOCAL_FASTWAN,
+        "onnx/vae/conv3d_chain_n5.onnx",
+        70.8 * 1024 * 1024,
+      ),
+      dummyRun: {
+        dtype: "float16" as const,
+        inputs: [{ match: ["x"], shape: [1, 512, 2, 60, 104], gaussian: true }],
+      },
+    })),
+  },
+  {
+    id: "fastwan-conv3d-chain",
+    label: "FastWan Conv3D chain TDR probe (1/3/5 Convs back-to-back, 127 MB)",
+    components: (() => {
+      // Tests cumulative-submit TDR: is it per-dispatch or per-session.run?
+      // Each Conv is 512->512 k3p1 on [1,512,2,60,104] — ~88 Gop, which ran
+      // clean as a single-tile probe. If N=1 clean, N=3 TDR, then ORT-web
+      // batches everything into one command buffer and we need to split.
+      const sizes = [
+        { n: 1, bytes: 14.2 * 1024 * 1024 },
+        { n: 3, bytes: 42.5 * 1024 * 1024 },
+        { n: 5, bytes: 70.8 * 1024 * 1024 },
+      ];
+      return sizes.map((p) => ({
+        name: `Conv3D chain n=${p.n} (${p.n} x 88 Gop 512->512 k3p1 [1,512,2,60,104])`,
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          `onnx/vae/conv3d_chain_n${p.n}.onnx`,
+          p.bytes,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [{ match: ["x"], shape: [1, 512, 2, 60, 104], gaussian: true }],
+        },
+      }));
+    })(),
+  },
+  {
+    id: "fastwan-conv3d-probe",
+    label: "FastWan Conv3D TDR probe (5 shapes covering heaviest decoder convs, ~110 MB)",
+    components: (() => {
+      // Five single-Conv3D probes at T_in=4 (matches step graph T). Each is
+      // pad=0 kernel=3x3x3 matching real-VAE Conv3Ds. Running all in sequence
+      // tells us which shape TDRs in isolation. Prior run proved E
+      // ([1,256,2,240,416] 256->256) runs in 5.6s; not tested here.
+      const probes: { tag: string; inC: number; outC: number; H: number; W: number; bytes: number }[] = [
+        { tag: "Btile_1024to512_15x208", inC: 1024, outC: 512, H: 17, W: 210, bytes: 28.3 * 1024 * 1024 },
+        { tag: "G_1024to1024_30x52", inC: 1024, outC: 1024, H: 32, W: 54, bytes: 56.6 * 1024 * 1024 },
+        { tag: "A_1024to1024_60x104", inC: 1024, outC: 1024, H: 62, W: 106, bytes: 56.6 * 1024 * 1024 },
+        { tag: "B_1024to512_120x208", inC: 1024, outC: 512, H: 122, W: 210, bytes: 28.3 * 1024 * 1024 },
+        { tag: "C_512to512_120x208", inC: 512, outC: 512, H: 122, W: 210, bytes: 14.2 * 1024 * 1024 },
+        { tag: "D_512to256_240x416", inC: 512, outC: 256, H: 242, W: 418, bytes: 7.1 * 1024 * 1024 },
+        { tag: "F_256to3_240x416", inC: 256, outC: 3, H: 242, W: 418, bytes: 0.1 * 1024 * 1024 },
+      ];
+      return probes.map((p) => ({
+        name: `Conv3D ${p.tag} [1,${p.inC},4,${p.H},${p.W}] -> [1,${p.outC},2,${p.H - 2},${p.W - 2}]`,
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          `onnx/vae/conv3d_probe_${p.tag}.onnx`,
+          p.bytes,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [{ match: ["x"], shape: [1, p.inC, 4, p.H, p.W], gaussian: true }],
+        },
+      }));
+    })(),
+  },
+  {
+    id: "fastwan-vae-final-block",
+    label:
+      "FastWan 2.2 AutoencoderKLWan final up_block probe (worst-case Conv3D, 25 MB)",
+    components: [
+      // Isolates up_blocks[-1] at full 240x416 spatial to answer: does per-block
+      // chunking dodge the TDR, or is a single Conv3D dispatch on 240x416x256ch
+      // the hang? Captured in frame-0 mode (T=1); real step-mode T=4 would be
+      // ~4x heavier, so if this TDRs chunking won't save us.
+      {
+        name: "final up_block (x[1,512,1,240,416] + 6 caches -> y + caches)",
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/vae/probe_final_block.onnx",
+          25.1 * 1024 * 1024,
+        ),
+        dummyRun: {
+          dtype: "float16" as const,
+          inputs: [
+            { match: ["x"], shape: [1, 512, 1, 240, 416], gaussian: true },
+            { match: ["cache_in_25"], shape: [1, 512, 1, 240, 416] },
+            { match: ["cache_in_26"], shape: [1, 256, 1, 240, 416] },
+            { match: ["cache_in_27"], shape: [1, 256, 1, 240, 416] },
+            { match: ["cache_in_28"], shape: [1, 256, 1, 240, 416] },
+            { match: ["cache_in_29"], shape: [1, 256, 1, 240, 416] },
+            { match: ["cache_in_30"], shape: [1, 256, 1, 240, 416] },
           ],
         },
       },
@@ -1110,7 +1507,10 @@ function findName(names: readonly string[], matchers: string[]): string | null {
   return null;
 }
 
-async function tryComponent(c: Component) {
+async function tryComponent(
+  c: Component,
+  prevOutputs: Record<string, ort.Tensor> = {},
+): Promise<Record<string, ort.Tensor>> {
   log(`--- ${c.name} ---`);
   // Log actual on-disk sizes (rather than the rough estimates in
   // CANDIDATES). Cheap stat via FileSystemFileHandle.getFile().
@@ -1130,9 +1530,14 @@ async function tryComponent(c: Component) {
   // Use blob URLs (avoids copying multi-GB files into wasm heap as ArrayBuffer).
   const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(c.graph);
   let revokeData = () => {};
+  const ortVerbose =
+    new URLSearchParams(location.search).get("ortverbose") === "1";
   const sessionOptions: ort.InferenceSession.SessionOptions = {
     executionProviders: providers(),
     graphOptimizationLevel: c.graphOptLevel ?? "all",
+    ...(ortVerbose
+      ? { logSeverityLevel: 0, logVerbosityLevel: 1 }
+      : {}),
   };
   if (c.graphOptLevel) {
     log(`graphOptimizationLevel: ${c.graphOptLevel}`);
@@ -1161,6 +1566,7 @@ async function tryComponent(c: Component) {
     revokeData();
   }
 
+  let lastResults: ort.InferenceSession.OnnxValueMapType | null = null;
   if (session && c.dummyRun) {
     setStatus(`dummy run ${c.name}`);
     const dummyDtype = c.dummyRun.dtype ?? "float16";
@@ -1194,6 +1600,17 @@ async function tryComponent(c: Component) {
           continue;
         }
         const len = spec.shape.reduce((a, b) => a * b, 1);
+        if (spec.fromPrevOutput) {
+          const prevName = findName(Object.keys(prevOutputs), [spec.fromPrevOutput]);
+          const prevT = prevName ? prevOutputs[prevName] : undefined;
+          if (!prevT) {
+            log(`  dummyRun: fromPrevOutput ${spec.fromPrevOutput} not found - falling back to zeros`);
+            feeds[inputName] = buildTensor(spec.dtype ?? dummyDtype, len, spec.shape);
+          } else {
+            feeds[inputName] = prevT;
+          }
+          continue;
+        }
         if (spec.gaussian) {
           const rng = mulberry32(12345);
           const noise = gaussianNoise(len, rng);
@@ -1233,7 +1650,6 @@ async function tryComponent(c: Component) {
       }
       const repeats = c.dummyRun.repeats ?? 1;
       const tRun0 = performance.now();
-      let lastResults: ort.InferenceSession.OnnxValueMapType | null = null;
       try {
         lastResults = await session.run(feeds);
         const dt0 = performance.now() - tRun0;
@@ -1307,6 +1723,19 @@ async function tryComponent(c: Component) {
     }
   }
 
+  // Capture output tensors by copying their fp16 bits into standalone tensors
+  // so they survive session.release() and can feed the next component.
+  const captured: Record<string, ort.Tensor> = {};
+  if (session && lastResults) {
+    for (const name of Object.keys(lastResults)) {
+      const t = lastResults[name] as ort.Tensor;
+      if (t.type === "float16") {
+        const bits = copyF16Bits(t.data as ArrayBufferView);
+        captured[name] = new ort.Tensor("float16", bits, t.dims);
+      }
+    }
+  }
+
   if (session) {
     try {
       await session.release();
@@ -1315,6 +1744,7 @@ async function tryComponent(c: Component) {
     }
   }
   log("");
+  return captured;
 }
 
 async function runSmoke() {
@@ -1333,12 +1763,19 @@ async function runSmoke() {
     await dumpEnvironment();
     await downloadAll(comps);
     log("=== component checks ===");
+    // Accumulate across components — fromPrevOutput can reference any tensor
+    // produced by any earlier component in the chain, not just N-1. Needed for
+    // VAE-split parts whose side-input (e.g. block_input for an up_block's
+    // avg_shortcut) comes from several components upstream.
+    let prevOutputs: Record<string, ort.Tensor> = {};
     for (const c of comps) {
       try {
-        await tryComponent(c);
+        const out = await tryComponent(c, prevOutputs);
+        prevOutputs = { ...prevOutputs, ...out };
       } catch (err) {
         log(`unexpected error on ${c.name}: ${(err as Error).message}`);
         log("");
+        prevOutputs = {};
       }
     }
     log("### done");

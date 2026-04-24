@@ -32,13 +32,40 @@ function mf(id: string, name: string, rel: string, sizeBytes: number): ModelFile
   };
 }
 
-// VAE decoder (LightTAE) - single fp16 file, no external data.
+// VAE decoder (LightTAE) - single fp16 file, no external data. Used for
+// previews always, and for final decode by default.
 export const FASTWAN_VAE_FILE: ModelFile = mf(
   "vae_decoder",
   "vae_decoder.onnx",
   "vae_decoder.onnx",
   36_600_000,
 );
+
+// Full AutoencoderKLWan streaming decoder. Two monolithic ONNX graphs
+// (Conv3D-decomposed to Conv2D-sum in export, see export-fastwan-vae-kl-
+// streaming.py --decompose-conv3d). Gated on ?vaekl=1 for final decode;
+// previews always stay on LightTAE. Each graph ~1.1 GB, no external data.
+export const FASTWAN_VAE_KL_INIT_FILE: ModelFile = mf(
+  "vae_kl_init_decomp",
+  "vae/decoder_init.onnx",
+  "vae/decoder_init.onnx",
+  1_117_366_418,
+);
+
+export const FASTWAN_VAE_KL_STEP_FILE: ModelFile = mf(
+  "vae_kl_step_decomp",
+  "vae/decoder_step.onnx",
+  "vae/decoder_step.onnx",
+  1_110_666_229,
+);
+
+/** `?vaekl=1` on the tool URL swaps the final VAE decode from LightTAE to
+ *  the full AutoencoderKLWan streaming decoder. Previews remain on
+ *  LightTAE (Wan VAE is too slow for in-loop preview). Adds ~2.2 GB to
+ *  downloads. */
+export const FASTWAN_USE_VAE_KL =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("vaekl") === "1";
 
 // ---- Text encoder q4f16 ----------------------------------------------------
 // Embedding table lives outside the ONNX graph; see fastwan/embedding.ts for
@@ -330,6 +357,9 @@ export function fastwanAllFiles(precision: FastwanTransformerPrecision): ModelFi
     ...ortModelFiles(tx.shellPre),
     ...ortModelFiles(tx.shellPost),
   ];
+  if (FASTWAN_USE_VAE_KL) {
+    files.push(FASTWAN_VAE_KL_INIT_FILE, FASTWAN_VAE_KL_STEP_FILE);
+  }
   for (const layer of FASTWAN_TEXT_ENCODER_LAYERS) files.push(...ortModelFiles(layer));
   for (const block of tx.blocks) files.push(...ortModelFiles(block));
   return files;

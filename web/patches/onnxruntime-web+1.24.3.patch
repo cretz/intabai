@@ -1,5 +1,5 @@
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs b/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
-index 0211f2a..b70f0bb 100644
+index 0211f2a..a4ba4b4 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
 @@ -2101,7 +2101,7 @@ var best_index : i32 = 0;`,`if (${t.getByIndices("input_indices")} ${e.selectLas
@@ -118,6 +118,41 @@ index 0211f2a..b70f0bb 100644
      ${I}
    }
  `},vE=(r,e,n,t,o=!1)=>{let[i,a,s,u]=t,l=Me(t[0].type.tensor);return`
+@@ -2795,11 +2795,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+             ${G}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${C.getByIndices("aIndices")};
++              return f32(${C.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${R.getByIndices("aIndices")};
++              return f32(${R.getByIndices("aIndices")});
+             }
+           ${v.registerUniforms($).declareVariables(...x,B)}
+           ${v.mainStart()}
+@@ -2820,7 +2820,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -2893,9 +2893,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+                   }
+                 }
+               }
+-              ${I?"value = value + getBiasByOutputCoords(coords)":""};
++              ${I?"value = value + f32(getBiasByOutputCoords(coords))":""};
+               ${J}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${P}(value);
+           }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${a};${h};${I}`,inputDependencies:_},getRunData:()=>({outputs:[{dims:n,dataType:r[0].dataType}],dispatchGroup:{x:p[0],y:p[1],z:p[2]},programUniforms:b}),getShaderSource:w}}});var ww,vw,xw=N(()=>{"use strict";ue();fe();ge();wr();ww=(r,e,n,t)=>{let o=r.length>2,i=o?"value += b[output_channel];":"",a=r[0].dims,s=r[1].dims,u=e.format==="NHWC",l=u?n[3]:n[1],d=l/e.group,p=u&&d>=4?Pe(l):1,h=D.size(n)/p,g=[{type:12,data:h},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:d}];Jt(e,g),g.push(...U(a,[s[0],s[1],s[2],s[3]/p]));let b=o?["rank","rank","rank"]:["rank","rank"];g.push(...U([n[0],n[1],n[2],n[3]/p]));let _=I=>{let w=F("output",r[0].dataType,n.length,p),v=Me(w.type.tensor),$=Zt(e,w.type.value,v),A=L("x",r[0].dataType,a.length),P=L("w",r[1].dataType,s.length,p),C=[A,P];o&&C.push(L("b",r[2].dataType,r[2].dims,p));let R=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Qt(e,R);let x=u?`
+       for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
+         let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
 @@ -4470,8 +4470,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
            ${p.setByOffset("global_idx",h.getByIndices("input_indices"))}
        }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${a.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:I,getRunData:()=>({outputs:[d],dispatchGroup:{x:Math.ceil(t/64)},programUniforms:_})}},px=(r,e)=>{cD(r.inputs,e);let n=dD(r.inputs,e);r.compute(fD(r.inputs,n),{inputs:[0]})},fx=r=>{let e=r.starts,n=r.ends,t=r.axes;return le({starts:e,ends:n,axes:t})}});var hD,mD,mx,gx,bx=N(()=>{"use strict";ue();fe();Je();Yn();ge();hD=r=>{if(!r||r.length!==1)throw new Error("Softmax op requires 1 input.")},mD=(r,e)=>{let n=r.inputs[0],t=n.dims,o=D.size(t),i=t.length,a=D.normalizeAxis(e.axis,i),s=a<t.length-1,u,l=[];s?(l=Array.from({length:i},(R,x)=>x),l[a]=i-1,l[i-1]=a,u=r.compute(st(n,l),{inputs:[n],outputs:[-1]})[0]):u=n;let d=u.dims,p=d[i-1],h=o/p,g=Pe(p),b=p/g,_=64;h===1&&(_=256);let I=(R,x)=>x===4?`max(max(${R}.x, ${R}.y), max(${R}.z, ${R}.w))`:x===2?`max(${R}.x, ${R}.y)`:x===3?`max(max(${R}.x, ${R}.y), ${R}.z)`:R,w=L("x",u.dataType,u.dims,g),v=F("result",u.dataType,u.dims,g),$=w.type.value,A=Me(u.dataType)==="f32"?`var threadMax = ${$}(-3.4028234663852886e+38f);`:`var threadMax = ${$}(-65504.0h);`,P=R=>`
@@ -174,7 +209,7 @@ index 0211f2a..b70f0bb 100644
            value = max(value, ${$}(0.0));
            setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.min.mjs b/node_modules/onnxruntime-web/dist/ort.all.min.mjs
-index 631bec6..d471573 100644
+index 631bec6..6ebdb72 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.min.mjs
 @@ -2096,7 +2096,7 @@ var best_index : i32 = 0;`,`if (${t.getByIndices("input_indices")} ${e.selectLas
@@ -293,6 +328,41 @@ index 631bec6..d471573 100644
      ${y}
    }
  `},H1=(r,e,n,t,o=!1)=>{let[i,a,s,u]=t,l=ve(t[0].type.tensor);return`
+@@ -2790,11 +2790,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+             ${R}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${I.getByIndices("aIndices")};
++              return f32(${I.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${P.getByIndices("aIndices")};
++              return f32(${P.getByIndices("aIndices")});
+             }
+           ${b.registerUniforms(x).declareVariables(...O,E)}
+           ${b.mainStart()}
+@@ -2815,7 +2815,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -2888,9 +2888,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+                   }
+                 }
+               }
+-              ${y?"value = value + getBiasByOutputCoords(coords)":""};
++              ${y?"value = value + f32(getBiasByOutputCoords(coords))":""};
+               ${B}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${v}(value);
+           }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${a};${p};${y}`,inputDependencies:m},getRunData:()=>({outputs:[{dims:n,dataType:r[0].dataType}],dispatchGroup:{x:d[0],y:d[1],z:d[2]},programUniforms:h}),getShaderSource:g}}});var ny,ry,oy=$(()=>{"use strict";Z();ne();oe();Fn();ny=(r,e,n,t)=>{let o=r.length>2,i=o?"value += b[output_channel];":"",a=r[0].dims,s=r[1].dims,u=e.format==="NHWC",l=u?n[3]:n[1],c=l/e.group,d=u&&c>=4?he(l):1,p=S.size(n)/d,f=[{type:12,data:p},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:c}];Pt(e,f),f.push(...k(a,[s[0],s[1],s[2],s[3]/d]));let h=o?["rank","rank","rank"]:["rank","rank"];f.push(...k([n[0],n[1],n[2],n[3]/d]));let m=y=>{let g=C("output",r[0].dataType,n.length,d),b=ve(g.type.tensor),x=At(e,g.type.value,b),w=A("x",r[0].dataType,a.length),v=A("w",r[1].dataType,s.length,d),I=[w,v];o&&I.push(A("b",r[2].dataType,r[2].dims,d));let P=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ot(e,P);let O=u?`
+       for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
+         let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
 @@ -4465,8 +4465,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
            ${d.setByOffset("global_idx",p.getByIndices("input_indices"))}
        }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${a.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:y,getRunData:()=>({outputs:[c],dispatchGroup:{x:Math.ceil(t/64)},programUniforms:m})}},K_=(r,e)=>{LA(r.inputs,e);let n=RA(r.inputs,e);r.compute(zA(r.inputs,n),{inputs:[0]})},X_=r=>{let e=r.starts,n=r.ends,t=r.axes;return J({starts:e,ends:n,axes:t})}});var MA,BA,J_,Q_,Y_=$(()=>{"use strict";Z();ne();Ee();In();oe();MA=r=>{if(!r||r.length!==1)throw new Error("Softmax op requires 1 input.")},BA=(r,e)=>{let n=r.inputs[0],t=n.dims,o=S.size(t),i=t.length,a=S.normalizeAxis(e.axis,i),s=a<t.length-1,u,l=[];s?(l=Array.from({length:i},(P,O)=>O),l[a]=i-1,l[i-1]=a,u=r.compute(Fe(n,l),{inputs:[n],outputs:[-1]})[0]):u=n;let c=u.dims,d=c[i-1],p=o/d,f=he(d),h=d/f,m=64;p===1&&(m=256);let y=(P,O)=>O===4?`max(max(${P}.x, ${P}.y), max(${P}.z, ${P}.w))`:O===2?`max(${P}.x, ${P}.y)`:O===3?`max(max(${P}.x, ${P}.y), ${P}.z)`:P,g=A("x",u.dataType,u.dims,f),b=C("result",u.dataType,u.dims,f),x=g.type.value,w=ve(u.dataType)==="f32"?`var threadMax = ${x}(-3.4028234663852886e+38f);`:`var threadMax = ${x}(-65504.0h);`,v=P=>`
@@ -349,7 +419,7 @@ index 631bec6..d471573 100644
            value = max(value, ${x}(0.0));
            setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.mjs b/node_modules/onnxruntime-web/dist/ort.all.mjs
-index 753bb4d..b10c117 100644
+index 753bb4d..d9b46fc 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.mjs
 @@ -28899,7 +28899,7 @@ var init_attention = __esm({
@@ -470,6 +540,41 @@ index 753bb4d..b10c117 100644
      ${matmulSnippet}
    }
  `;
+@@ -31365,11 +31365,11 @@ var init_conv3d_naive_webgpu = __esm({
+             ${declareFunctions}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${x.getByIndices("aIndices")};
++              return f32(${x.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${w.getByIndices("aIndices")};
++              return f32(${w.getByIndices("aIndices")});
+             }
+           ${shaderHelper.registerUniforms(uniforms).declareVariables(...inputVariables, output)}
+           ${shaderHelper.mainStart()}
+@@ -31390,7 +31390,7 @@ var init_conv3d_naive_webgpu = __esm({
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -31463,9 +31463,9 @@ var init_conv3d_naive_webgpu = __esm({
+                   }
+                 }
+               }
+-              ${hasBias ? "value = value + getBiasByOutputCoords(coords)" : ""};
++              ${hasBias ? "value = value + f32(getBiasByOutputCoords(coords))" : ""};
+               ${applyActivation}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${t}(value);
+           }`;
+       };
+       return {
 @@ -37949,8 +37949,8 @@ var init_softmax2 = __esm({
        const threadMaxDecl = tensorTypeToWsglStorageType(transposedInput.dataType) === "f32" ? `var threadMax = ${valueType}(-3.4028234663852886e+38f);` : `var threadMax = ${valueType}(-65504.0h);`;
        const getShaderSource = (shaderHelper) => `
@@ -526,7 +631,7 @@ index 753bb4d..b10c117 100644
            value = max(value, ${valueType}(0.0));
            setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs b/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
-index 1eb0a9e..6507fb8 100644
+index 1eb0a9e..b33c609 100644
 --- a/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
 @@ -305,7 +305,7 @@ var best_index : i32 = 0;`,`if (${n.getByIndices("input_indices")} ${e.selectLas
@@ -645,6 +750,41 @@ index 1eb0a9e..6507fb8 100644
      ${S}
    }
  `},Wh=(t,e,r,n,o=!1)=>{let[i,s,u,d]=n,c=be(n[0].type.tensor);return`
+@@ -999,11 +999,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+             ${N}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${A.getByIndices("aIndices")};
++              return f32(${A.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${z.getByIndices("aIndices")};
++              return f32(${z.getByIndices("aIndices")});
+             }
+           ${$.registerUniforms(T).declareVariables(...v,M)}
+           ${$.mainStart()}
+@@ -1024,7 +1024,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -1097,9 +1097,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+                   }
+                 }
+               }
+-              ${S?"value = value + getBiasByOutputCoords(coords)":""};
++              ${S?"value = value + f32(getBiasByOutputCoords(coords))":""};
+               ${q}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${E}(value);
+           }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${s};${g};${S}`,inputDependencies:w},getRunData:()=>({outputs:[{dims:r,dataType:t[0].dataType}],dispatchGroup:{x:m[0],y:m[1],z:m[2]},programUniforms:y}),getShaderSource:x}}});var Dd,Bd,Md=V(()=>{"use strict";J();ne();ae();St();Dd=(t,e,r,n)=>{let o=t.length>2,i=o?"value += b[output_channel];":"",s=t[0].dims,u=t[1].dims,d=e.format==="NHWC",c=d?r[3]:r[1],p=c/e.group,m=d&&p>=4?fe(c):1,g=k.size(r)/m,b=[{type:12,data:g},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:p}];Qe(e,b),b.push(...L(s,[u[0],u[1],u[2],u[3]/m]));let y=o?["rank","rank","rank"]:["rank","rank"];b.push(...L([r[0],r[1],r[2],r[3]/m]));let w=S=>{let x=R("output",t[0].dataType,r.length,m),$=be(x.type.tensor),T=Ze(e,x.type.value,$),I=O("x",t[0].dataType,s.length),E=O("w",t[1].dataType,u.length,m),A=[I,E];o&&A.push(O("b",t[2].dataType,t[2].dims,m));let z=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ye(e,z);let v=d?`
+       for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
+         let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
 @@ -2674,8 +2674,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
            ${m.setByOffset("global_idx",g.getByIndices("input_indices"))}
        }`;return{name:"Slice",shaderCache:{hint:`${d.length}_${s.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:S,getRunData:()=>({outputs:[p],dispatchGroup:{x:Math.ceil(n/64)},programUniforms:w})}},Ic=(t,e)=>{Py(t.inputs,e);let r=Oy(t.inputs,e);t.compute(Dy(t.inputs,r),{inputs:[0]})},Cc=t=>{let e=t.starts,r=t.ends,n=t.axes;return ee({starts:e,ends:r,axes:n})}});var By,My,Ec,kc,Pc=V(()=>{"use strict";J();ne();Ie();pt();ae();By=t=>{if(!t||t.length!==1)throw new Error("Softmax op requires 1 input.")},My=(t,e)=>{let r=t.inputs[0],n=r.dims,o=k.size(n),i=n.length,s=k.normalizeAxis(e.axis,i),u=s<n.length-1,d,c=[];u?(c=Array.from({length:i},(z,v)=>v),c[s]=i-1,c[i-1]=s,d=t.compute(Oe(r,c),{inputs:[r],outputs:[-1]})[0]):d=r;let p=d.dims,m=p[i-1],g=o/m,b=fe(m),y=m/b,w=64;g===1&&(w=256);let S=(z,v)=>v===4?`max(max(${z}.x, ${z}.y), max(${z}.z, ${z}.w))`:v===2?`max(${z}.x, ${z}.y)`:v===3?`max(max(${z}.x, ${z}.y), ${z}.z)`:z,x=O("x",d.dataType,d.dims,b),$=R("result",d.dataType,d.dims,b),T=x.type.value,I=be(d.dataType)==="f32"?`var threadMax = ${T}(-3.4028234663852886e+38f);`:`var threadMax = ${T}(-65504.0h);`,E=z=>`
@@ -701,7 +841,7 @@ index 1eb0a9e..6507fb8 100644
            value = max(value, ${T}(0.0));
            setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.min.mjs b/node_modules/onnxruntime-web/dist/ort.min.mjs
-index 6c3e58a..c811bf7 100644
+index 6c3e58a..71ed92d 100644
 --- a/node_modules/onnxruntime-web/dist/ort.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.min.mjs
 @@ -300,7 +300,7 @@ var best_index : i32 = 0;`,`if (${r.getByIndices("input_indices")} ${t.selectLas
@@ -820,6 +960,41 @@ index 6c3e58a..c811bf7 100644
      ${b}
    }
  `},cl=(e,t,n,r,o=!1)=>{let[i,s,a,u]=r,d=re(r[0].type.tensor);return`
+@@ -994,11 +994,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+             ${z}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${$.getByIndices("aIndices")};
++              return f32(${$.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${T.getByIndices("aIndices")};
++              return f32(${T.getByIndices("aIndices")});
+             }
+           ${g.registerUniforms(_).declareVariables(...I,A)}
+           ${g.mainStart()}
+@@ -1019,7 +1019,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -1092,9 +1092,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+                   }
+                 }
+               }
+-              ${b?"value = value + getBiasByOutputCoords(coords)":""};
++              ${b?"value = value + f32(getBiasByOutputCoords(coords))":""};
+               ${D}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${v}(value);
+           }`};return{name:"Conv3DNaive",shaderCache:{hint:`${t.cacheKey};${s};${p};${b}`,inputDependencies:h},getRunData:()=>({outputs:[{dims:n,dataType:e[0].dataType}],dispatchGroup:{x:c[0],y:c[1],z:c[2]},programUniforms:m}),getShaderSource:y}}});var gs,ys,bs=k(()=>{"use strict";L();F();j();qe();gs=(e,t,n,r)=>{let o=e.length>2,i=o?"value += b[output_channel];":"",s=e[0].dims,a=e[1].dims,u=t.format==="NHWC",d=u?n[3]:n[1],l=d/t.group,c=u&&l>=4?J(d):1,p=x.size(n)/c,f=[{type:12,data:p},{type:12,data:t.dilations},{type:12,data:[t.strides[0],t.strides[1]]},{type:12,data:[t.pads[0],t.pads[1]]},{type:12,data:l}];Ce(t,f),f.push(...P(s,[a[0],a[1],a[2],a[3]/c]));let m=o?["rank","rank","rank"]:["rank","rank"];f.push(...P([n[0],n[1],n[2],n[3]/c]));let h=b=>{let y=C("output",e[0].dataType,n.length,c),g=re(y.type.tensor),_=Ie(t,y.type.value,g),w=S("x",e[0].dataType,s.length),v=S("w",e[1].dataType,a.length,c),$=[w,v];o&&$.push(S("b",e[2].dataType,e[2].dims,c));let T=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:t.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ae(t,T);let I=u?`
+       for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
+         let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
 @@ -2669,8 +2669,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
            ${c.setByOffset("global_idx",p.getByIndices("input_indices"))}
        }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${s.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:b,getRunData:()=>({outputs:[l],dispatchGroup:{x:Math.ceil(r/64)},programUniforms:h})}},uu=(e,t)=>{ep(e.inputs,t);let n=tp(e.inputs,t);e.compute(rp(e.inputs,n),{inputs:[0]})},du=e=>{let t=e.starts,n=e.ends,r=e.axes;return G({starts:t,ends:n,axes:r})}});var op,ip,cu,pu,mu=k(()=>{"use strict";L();F();ie();Ue();j();op=e=>{if(!e||e.length!==1)throw new Error("Softmax op requires 1 input.")},ip=(e,t)=>{let n=e.inputs[0],r=n.dims,o=x.size(r),i=r.length,s=x.normalizeAxis(t.axis,i),a=s<r.length-1,u,d=[];a?(d=Array.from({length:i},(T,I)=>I),d[s]=i-1,d[i-1]=s,u=e.compute(pe(n,d),{inputs:[n],outputs:[-1]})[0]):u=n;let l=u.dims,c=l[i-1],p=o/c,f=J(c),m=c/f,h=64;p===1&&(h=256);let b=(T,I)=>I===4?`max(max(${T}.x, ${T}.y), max(${T}.z, ${T}.w))`:I===2?`max(${T}.x, ${T}.y)`:I===3?`max(max(${T}.x, ${T}.y), ${T}.z)`:T,y=S("x",u.dataType,u.dims,f),g=C("result",u.dataType,u.dims,f),_=y.type.value,w=re(u.dataType)==="f32"?`var threadMax = ${_}(-3.4028234663852886e+38f);`:`var threadMax = ${_}(-65504.0h);`,v=T=>`
@@ -876,7 +1051,7 @@ index 6c3e58a..c811bf7 100644
            value = max(value, ${_}(0.0));
            setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.mjs b/node_modules/onnxruntime-web/dist/ort.mjs
-index 875e1d3..e835d20 100644
+index 875e1d3..81bef17 100644
 --- a/node_modules/onnxruntime-web/dist/ort.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.mjs
 @@ -5865,7 +5865,7 @@ var init_attention = __esm({
@@ -997,6 +1172,41 @@ index 875e1d3..e835d20 100644
      ${matmulSnippet}
    }
  `;
+@@ -8331,11 +8331,11 @@ var init_conv3d_naive_webgpu = __esm({
+             ${declareFunctions}
+             fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${x.getByIndices("aIndices")};
++              return f32(${x.getByIndices("aIndices")});
+             }
+             fn getW(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
+               let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
+-              return ${w.getByIndices("aIndices")};
++              return f32(${w.getByIndices("aIndices")});
+             }
+           ${shaderHelper.registerUniforms(uniforms).declareVariables(...inputVariables, output)}
+           ${shaderHelper.mainStart()}
+@@ -8356,7 +8356,7 @@ var init_conv3d_naive_webgpu = __esm({
+               let inputDepthNearestVec4 = (xShapeU / 4) * 4;
+               let inputDepthVec4Remainder = xShapeU % 4;
+ 
+-              var value = 0.0;
++              var value: f32 = 0.0;
+               for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
+                 let xF = xFCorner + wF * uniforms.dilations[0];
+                 if (xF < 0 || xF >= xShapeY) {
+@@ -8429,9 +8429,9 @@ var init_conv3d_naive_webgpu = __esm({
+                   }
+                 }
+               }
+-              ${hasBias ? "value = value + getBiasByOutputCoords(coords)" : ""};
++              ${hasBias ? "value = value + f32(getBiasByOutputCoords(coords))" : ""};
+               ${applyActivation}
+-              result[global_idx] = f32(value);
++              result[global_idx] = ${t}(value);
+           }`;
+       };
+       return {
 @@ -14915,8 +14915,8 @@ var init_softmax = __esm({
        const threadMaxDecl = tensorTypeToWsglStorageType(transposedInput.dataType) === "f32" ? `var threadMax = ${valueType}(-3.4028234663852886e+38f);` : `var threadMax = ${valueType}(-65504.0h);`;
        const getShaderSource = (shaderHelper) => `

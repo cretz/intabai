@@ -38,6 +38,7 @@ import {
 } from "./transformer";
 import {
   VaeDecoder,
+  WanVaeDecoder,
   LIGHTTAE_OUT_FRAMES,
   LIGHTTAE_OUT_H,
   LIGHTTAE_OUT_W,
@@ -50,6 +51,9 @@ import {
   FASTWAN_TEXT_ENCODER_LAYERS,
   FASTWAN_TEXT_ENCODER_SHELL_POST,
   FASTWAN_VAE_FILE,
+  FASTWAN_VAE_KL_INIT_FILE,
+  FASTWAN_VAE_KL_STEP_FILE,
+  FASTWAN_USE_VAE_KL,
   FASTWAN_TEXT_ENCODER_WASM,
   FASTWAN_TEXT_MASK_MAG,
   FASTWAN_TRANSFORMER_WASM,
@@ -488,6 +492,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   // ---- 6. Final VAE decode -----------------------------------------------
   progress(txBase + W_DENOISE, "vae", "decoding frames");
   let framesFp16Bits: Uint16Array;
+  let framesRangeSigned = false;
   const vaeStart = performance.now();
   try {
     statsFp32("vae_in_latent (normalized, pre-denorm)", latentFp32);
@@ -508,16 +513,46 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     );
     statsFp32("vae_in_latent (denormalized, post x*std+mean)", denormalized);
     opts.onLatentDump?.("final_latent_denormalized", denormalized, latentShape);
-    const transposed = transposeCT(
-      denormalized,
-      FASTWAN_LATENT_CHANNELS,
-      FASTWAN_LATENT_FRAMES,
-      FASTWAN_LATENT_H,
-      FASTWAN_LATENT_W,
-    );
-    framesFp16Bits = await vae.decode(f32ToF16Array(transposed));
+    if (FASTWAN_USE_VAE_KL) {
+      // Full AutoencoderKLWan: takes NCTHW latent directly, streams 1+20*4
+      // frames, output range is [-1, 1]. Release LightTAE session first to
+      // avoid concurrent ~2.5 GB + ~40 MB residency.
+      await vae.release();
+      const wanVae = new WanVaeDecoder(
+        cache,
+        FASTWAN_VAE_KL_INIT_FILE,
+        FASTWAN_VAE_KL_STEP_FILE,
+      );
+      try {
+        framesFp16Bits = await wanVae.decode(
+          f32ToF16Array(denormalized),
+          (done, total) => {
+            progress(
+              txBase + W_DENOISE + W_VAE * (done / total),
+              "vae",
+              `decoding frames ${done}/${total}`,
+            );
+          },
+        );
+      } finally {
+        await wanVae.release();
+      }
+      framesRangeSigned = true;
+    } else {
+      // LightTAE: takes [1, T, C, H, W] fp16, returns all 81 frames at once.
+      const transposed = transposeCT(
+        denormalized,
+        FASTWAN_LATENT_CHANNELS,
+        FASTWAN_LATENT_FRAMES,
+        FASTWAN_LATENT_H,
+        FASTWAN_LATENT_W,
+      );
+      framesFp16Bits = await vae.decode(f32ToF16Array(transposed));
+    }
   } finally {
-    await vae.release();
+    if (!FASTWAN_USE_VAE_KL) {
+      await vae.release();
+    }
   }
   log(`VAE decode in ${(performance.now() - vaeStart).toFixed(0)} ms`);
   statsFp16Bits("vae_out_frames", framesFp16Bits);
@@ -538,6 +573,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
         `framing ${done}/${LIGHTTAE_OUT_FRAMES}`,
       );
     },
+    framesRangeSigned,
   );
 
   progress(1, "done", "done");
@@ -577,9 +613,14 @@ async function framesToBitmaps(
   H: number,
   W: number,
   onFrame: (done: number) => void,
+  rangeSigned = false,
 ): Promise<ImageBitmap[]> {
+  // rangeSigned=false: source is [0, 1] (LightTAE export).
+  // rangeSigned=true:  source is [-1, 1] (AutoencoderKLWan export w/ clamp).
   const plane = H * W;
   const frameStride = 3 * plane;
+  const scale = rangeSigned ? 127.5 : 255;
+  const bias = rangeSigned ? 127.5 : 0;
   const out: ImageBitmap[] = [];
   for (let f = 0; f < F; f++) {
     const base = f * frameStride;
@@ -588,9 +629,9 @@ async function framesToBitmaps(
       const r = f16BitsToF32(bits[base + i]);
       const g = f16BitsToF32(bits[base + plane + i]);
       const b = f16BitsToF32(bits[base + 2 * plane + i]);
-      rgba[i * 4 + 0] = Math.max(0, Math.min(255, Math.round(r * 255)));
-      rgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
-      rgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
+      rgba[i * 4 + 0] = Math.max(0, Math.min(255, Math.round(r * scale + bias)));
+      rgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g * scale + bias)));
+      rgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b * scale + bias)));
       rgba[i * 4 + 3] = 255;
     }
     const bitmap = await createImageBitmap(new ImageData(rgba, W, H));
