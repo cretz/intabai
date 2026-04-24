@@ -1,11 +1,11 @@
 // FastWan 2.2 TI2V-5B end-to-end generation orchestrator.
 //
-// Runs the full pipeline for one 5s 480×832 clip:
+// Runs the full pipeline for one 5s 480×480 clip:
 //   1. Tokenize prompt (UMT5, pad/truncate to 512).
 //   2. JS-side int8 embedding lookup -> fp16 [1, 512, 4096].
 //   3. UMT5 text encoder: 24 q4f16 layers + shell_post, one session at a
 //      time, output [1, 512, 4096] fp16.
-//   4. Init latent noise [1, 48, 21, 30, 52] fp32 (seeded Gaussian).
+//   4. Init latent noise [1, 48, 21, 30, 30] fp32 (seeded Gaussian).
 //   5. 3 DMD denoising steps with direct x0 prediction + re-noise:
 //      shell_pre -> 30 block sessions -> shell_post -> x0 + add_noise.
 //      Timesteps [1000, 757, 522] are hardcoded training hyperparameters
@@ -14,9 +14,9 @@
 //      Transformer works in fp16 on the wire; sampling math in fp32.
 //   6. Per-channel denormalize the latent: raw[c] = norm[c]*std[c]+mean[c].
 //      Required for lighttae weights (lightx2v pipeline.py:266-267).
-//   7. Transpose latent axis order for VAE: [1, 48, 21, 30, 52] (NCTHW)
-//      -> [1, 21, 48, 30, 52] (NTCHW).
-//   8. LightTAE VAE decode -> [1, 81, 3, 480, 832] fp16, range [0, 1].
+//   7. Transpose latent axis order for VAE: [1, 48, 21, 30, 30] (NCTHW)
+//      -> [1, 21, 48, 30, 30] (NTCHW).
+//   8. LightTAE VAE decode -> [1, 81, 3, 480, 480] fp16, range [0, 1].
 //   9. Convert each frame to an ImageBitmap for display.
 //
 // Progress reporting is bucketed by stage with approximate per-step pct:
@@ -33,53 +33,25 @@ import {
   Transformer,
   FASTWAN_LATENT_CHANNELS,
   FASTWAN_LATENT_FRAMES,
-  FASTWAN_LATENT_H,
-  FASTWAN_LATENT_W,
+  fastwanShape,
+  type FastwanResolution,
+  type FastwanShape,
 } from "./transformer";
-import {
-  VaeDecoder,
-  WanVaeDecoder,
-  LIGHTTAE_OUT_FRAMES,
-  LIGHTTAE_OUT_H,
-  LIGHTTAE_OUT_W,
-} from "./vae";
+import { VaeDecoder, LIGHTTAE_OUT_FRAMES } from "./vae";
 import {
   FASTWAN_EMBEDDING_Q8_FILE,
   FASTWAN_EMBEDDING_SCALES_FILE,
   FASTWAN_FLOW_SHIFT,
-  FASTWAN_NUM_STEPS_OVERRIDE,
+  FASTWAN_NUM_STEPS,
   FASTWAN_TEXT_ENCODER_LAYERS,
   FASTWAN_TEXT_ENCODER_SHELL_POST,
-  FASTWAN_VAE_FILE,
-  FASTWAN_VAE_KL_INIT_FILE,
-  FASTWAN_VAE_KL_STEP_FILE,
-  FASTWAN_USE_VAE_KL,
-  FASTWAN_TEXT_ENCODER_WASM,
-  FASTWAN_TEXT_MASK_MAG,
-  FASTWAN_TRANSFORMER_WASM,
   fastwanTransformerFiles,
+  fastwanVaeFile,
   type FastwanTransformerPrecision,
 } from "./models";
 import { UniPCFlowScheduler } from "./unipc-scheduler";
 
-/** Thrown by `generate()` when `stopAfterBlock00` is set, after block_00
- *  runs at step 1 and its hex dump is emitted. Lets us byte-diff block_00
- *  output against the Python CPU ONNX reference
- *  (`scripts/dump-reference-block-00.py`) without waiting for the full
- *  ~10-min block loop. The UI catches this and treats it as a clean early
- *  exit, not an error. */
-export class FastwanStopAfterBlock00 extends Error {
-  constructor() {
-    super("stopped after block_00 (debug)");
-    this.name = "FastwanStopAfterBlock00";
-  }
-}
-
 export const FASTWAN_OUTPUT_FPS = 16;
-
-/** Active denoising step count. Default 4 matches KingNish/wan2-2-fast
- *  (UniPCMultistepScheduler at num_inference_steps=4). */
-export const FASTWAN_NUM_STEPS = FASTWAN_NUM_STEPS_OVERRIDE ?? 4;
 
 /** Per-channel latent mean/std for Wan 2.2 (48 channels). Identical to
  *  `notes/models/fastwan/source/vae/config.json` and to the hardcoded
@@ -155,29 +127,19 @@ export interface GenerateOptions {
    *  forward pass because ORT-web's MatMulNBits kernel dequants on every
    *  call. Text encoder + VAE precision is fixed. */
   transformerPrecision?: FastwanTransformerPrecision;
+  /** Output resolution. The transformer + VAE assets are exported per
+   *  resolution; the selected video-gen model entry pins this. */
+  resolution: FastwanResolution;
   onProgress?: (info: ProgressInfo) => void;
   /** Verbose per-stage trace (timings, shapes, step-level events). Opt-in
    *  because the scheduler / block loop produce a lot of lines. */
   onDebug?: (msg: string) => void;
   signal?: AbortSignal;
-  /** Debug: throw `FastwanStopAfterBlock00` right after block_00 runs at
-   *  step 1 and its hex dump is emitted. Lets us byte-diff block_00
-   *  output against the Python CPU ONNX reference
-   *  (`scripts/dump-reference-block-00.py`) without waiting for the full
-   *  ~10-min block loop (block_00 alone takes ~6-7 min to load + run on
-   *  the WebGPU EP). */
-  stopAfterBlock00?: boolean;
   /** Optional preview hook. When set, the in-flight latent is VAE-decoded
    *  after each non-final denoising step and the resulting frames are
    *  delivered here. Adds ~2-3 s per step to the run, huge UX win on
    *  13-minute generations. `stepIndex` is 0-based. */
   onPreview?: (frames: ImageBitmap[], stepIndex: number) => void;
-  /** Debug dump hook. When set, the pipeline hands off key intermediate
-   *  latents as raw fp32 (NCTHW layout [1, 48, 21, 30, 52] for the final
-   *  latent). Used by the offline VAE-compare flow: save to disk, feed
-   *  into `decode-latent-compare.py` to diff LightTAE vs the full Wan VAE
-   *  without re-running the 14-min transformer. */
-  onLatentDump?: (label: string, latent: Float32Array, shape: number[]) => void;
 }
 
 export interface GenerateResult {
@@ -204,7 +166,8 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   const seed = opts.seed ?? Math.floor(Math.random() * 0xffffffff);
   const transformerPrecision: FastwanTransformerPrecision =
     opts.transformerPrecision ?? "q4f16";
-  const txFiles = fastwanTransformerFiles(transformerPrecision);
+  const shape: FastwanShape = fastwanShape(opts.resolution);
+  const txFiles = fastwanTransformerFiles(transformerPrecision, opts.resolution);
   const t0 = performance.now();
   const log = (msg: string) => {
     if (!onDebug) return;
@@ -267,13 +230,6 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
 
   // ---- 3. Text encoder -----------------------------------------------------
   progress(W_TOKENIZE + W_EMBED, "text-encoder", "encoding text (0/24)");
-  const textEncoderProviders: ("webgpu" | "wasm")[] = FASTWAN_TEXT_ENCODER_WASM
-    ? ["wasm"]
-    : ["webgpu", "wasm"];
-  log(`text encoder providers: ${textEncoderProviders.join(",")}`);
-  if (FASTWAN_TEXT_MASK_MAG !== 65504) {
-    log(`text encoder mask magnitude: -${FASTWAN_TEXT_MASK_MAG} (override)`);
-  }
   const textEncoder = new TextEncoder(
     cache,
     {
@@ -281,7 +237,6 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       shellPost: FASTWAN_TEXT_ENCODER_SHELL_POST,
     },
     embedding,
-    textEncoderProviders,
   );
   const encResult = await textEncoder.encode(
     ids,
@@ -307,30 +262,14 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     `text_embeds[valid:0..${validLength}]`,
     textEmbeds.subarray(0, validLength * 4096),
   );
-  // Dump first 32 values of every valid token for offline byte-diff
-  // against the Python reference. Hex format preserves fp16 bits exactly,
-  // so we can `diff` against a Python-generated reference line-by-line.
-  if (onDebug) {
-    const dumpRow = (label: string, offset: number) => {
-      const slice = textEmbeds.subarray(offset, offset + 32);
-      const vals = f16ToF32Array(slice);
-      const hex = Array.from(slice).map((b) =>
-        b.toString(16).padStart(4, "0"),
-      ).join(",");
-      log(`${label} f32=[${Array.from(vals).map((v) => v.toFixed(4)).join(",")}]`);
-      log(`${label} hex=${hex}`);
-    };
-    for (let t = 0; t < validLength; t++) {
-      dumpRow(`text_embeds[tok=${t},0:32]`, t * 4096);
-    }
-  }
+
   // ---- 4. Noise init -------------------------------------------------------
-  // Latent [1, 48, 21, 30, 52], N=48*21*30*52=1,572,480 elements.
+  // Latent [1, 48, 21, latentH, latentW].
   const latentLen =
     FASTWAN_LATENT_CHANNELS *
     FASTWAN_LATENT_FRAMES *
-    FASTWAN_LATENT_H *
-    FASTWAN_LATENT_W;
+    shape.latentH *
+    shape.latentW;
   const rand = mulberry32(seed);
   let latentFp32 = gaussianNoise(latentLen, rand);
   statsFp32("noise_init", latentFp32);
@@ -344,12 +283,9 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       blocks: txFiles.blocks,
       shellPost: txFiles.shellPost,
     },
-    FASTWAN_TRANSFORMER_WASM ? ["wasm"] : ["webgpu", "wasm"],
+    shape,
   );
   log(`transformer precision: ${transformerPrecision}`);
-  if (FASTWAN_TRANSFORMER_WASM) {
-    log("transformer: forced to wasm CPU EP (?transformerwasm=1)");
-  }
   progress(txBase, "denoise", "loading transformer shells");
   await transformer.load();
   throwIfAborted(signal);
@@ -360,7 +296,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   // VAE is used for optional per-step previews and the final decode. Load
   // once and reuse across all decodes to avoid the ~250 ms load cost
   // repeated 3x.
-  const vae = new VaeDecoder(cache, FASTWAN_VAE_FILE);
+  const vae = new VaeDecoder(cache, fastwanVaeFile(opts.resolution), shape);
   await vae.load();
 
   const decodeLatentToBitmaps = async (src: Float32Array): Promise<ImageBitmap[]> => {
@@ -368,23 +304,23 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       src,
       FASTWAN_LATENT_CHANNELS,
       FASTWAN_LATENT_FRAMES,
-      FASTWAN_LATENT_H,
-      FASTWAN_LATENT_W,
+      shape.latentH,
+      shape.latentW,
     );
     const transposedPre = transposeCT(
       denormalized,
       FASTWAN_LATENT_CHANNELS,
       FASTWAN_LATENT_FRAMES,
-      FASTWAN_LATENT_H,
-      FASTWAN_LATENT_W,
+      shape.latentH,
+      shape.latentW,
     );
     const inputFp16 = f32ToF16Array(transposedPre);
     const framesBits = await vae.decode(inputFp16);
     return framesToBitmaps(
       framesBits,
       LIGHTTAE_OUT_FRAMES,
-      LIGHTTAE_OUT_H,
-      LIGHTTAE_OUT_W,
+      shape.pixelH,
+      shape.pixelW,
       () => {},
     );
   };
@@ -427,11 +363,6 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
           stepIndex: step,
           onDebug,
           onStatsFp16: statsFp16Bits,
-          onStopAfterBlock00: opts.stopAfterBlock00
-            ? () => {
-                throw new FastwanStopAfterBlock00();
-              }
-            : undefined,
         },
         (sIdx, bDone, bTotal) => {
           const withinStep = bDone / bTotal;
@@ -492,67 +423,28 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   // ---- 6. Final VAE decode -----------------------------------------------
   progress(txBase + W_DENOISE, "vae", "decoding frames");
   let framesFp16Bits: Uint16Array;
-  let framesRangeSigned = false;
   const vaeStart = performance.now();
   try {
     statsFp32("vae_in_latent (normalized, pre-denorm)", latentFp32);
-    const latentShape = [
-      1,
-      FASTWAN_LATENT_CHANNELS,
-      FASTWAN_LATENT_FRAMES,
-      FASTWAN_LATENT_H,
-      FASTWAN_LATENT_W,
-    ];
-    opts.onLatentDump?.("final_latent_normalized", latentFp32, latentShape);
     const denormalized = denormalizeLatent(
       latentFp32,
       FASTWAN_LATENT_CHANNELS,
       FASTWAN_LATENT_FRAMES,
-      FASTWAN_LATENT_H,
-      FASTWAN_LATENT_W,
+      shape.latentH,
+      shape.latentW,
     );
     statsFp32("vae_in_latent (denormalized, post x*std+mean)", denormalized);
-    opts.onLatentDump?.("final_latent_denormalized", denormalized, latentShape);
-    if (FASTWAN_USE_VAE_KL) {
-      // Full AutoencoderKLWan: takes NCTHW latent directly, streams 1+20*4
-      // frames, output range is [-1, 1]. Release LightTAE session first to
-      // avoid concurrent ~2.5 GB + ~40 MB residency.
-      await vae.release();
-      const wanVae = new WanVaeDecoder(
-        cache,
-        FASTWAN_VAE_KL_INIT_FILE,
-        FASTWAN_VAE_KL_STEP_FILE,
-      );
-      try {
-        framesFp16Bits = await wanVae.decode(
-          f32ToF16Array(denormalized),
-          (done, total) => {
-            progress(
-              txBase + W_DENOISE + W_VAE * (done / total),
-              "vae",
-              `decoding frames ${done}/${total}`,
-            );
-          },
-        );
-      } finally {
-        await wanVae.release();
-      }
-      framesRangeSigned = true;
-    } else {
-      // LightTAE: takes [1, T, C, H, W] fp16, returns all 81 frames at once.
-      const transposed = transposeCT(
-        denormalized,
-        FASTWAN_LATENT_CHANNELS,
-        FASTWAN_LATENT_FRAMES,
-        FASTWAN_LATENT_H,
-        FASTWAN_LATENT_W,
-      );
-      framesFp16Bits = await vae.decode(f32ToF16Array(transposed));
-    }
+    // LightTAE: takes [1, T, C, H, W] fp16, returns all 81 frames at once.
+    const transposed = transposeCT(
+      denormalized,
+      FASTWAN_LATENT_CHANNELS,
+      FASTWAN_LATENT_FRAMES,
+      shape.latentH,
+      shape.latentW,
+    );
+    framesFp16Bits = await vae.decode(f32ToF16Array(transposed));
   } finally {
-    if (!FASTWAN_USE_VAE_KL) {
-      await vae.release();
-    }
+    await vae.release();
   }
   log(`VAE decode in ${(performance.now() - vaeStart).toFixed(0)} ms`);
   statsFp16Bits("vae_out_frames", framesFp16Bits);
@@ -563,8 +455,8 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   const frames = await framesToBitmaps(
     framesFp16Bits,
     LIGHTTAE_OUT_FRAMES,
-    LIGHTTAE_OUT_H,
-    LIGHTTAE_OUT_W,
+    shape.pixelH,
+    shape.pixelW,
     (done) => {
       const frac = done / LIGHTTAE_OUT_FRAMES;
       progress(
@@ -573,7 +465,6 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
         `framing ${done}/${LIGHTTAE_OUT_FRAMES}`,
       );
     },
-    framesRangeSigned,
   );
 
   progress(1, "done", "done");
@@ -613,14 +504,9 @@ async function framesToBitmaps(
   H: number,
   W: number,
   onFrame: (done: number) => void,
-  rangeSigned = false,
 ): Promise<ImageBitmap[]> {
-  // rangeSigned=false: source is [0, 1] (LightTAE export).
-  // rangeSigned=true:  source is [-1, 1] (AutoencoderKLWan export w/ clamp).
   const plane = H * W;
   const frameStride = 3 * plane;
-  const scale = rangeSigned ? 127.5 : 255;
-  const bias = rangeSigned ? 127.5 : 0;
   const out: ImageBitmap[] = [];
   for (let f = 0; f < F; f++) {
     const base = f * frameStride;
@@ -629,9 +515,9 @@ async function framesToBitmaps(
       const r = f16BitsToF32(bits[base + i]);
       const g = f16BitsToF32(bits[base + plane + i]);
       const b = f16BitsToF32(bits[base + 2 * plane + i]);
-      rgba[i * 4 + 0] = Math.max(0, Math.min(255, Math.round(r * scale + bias)));
-      rgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g * scale + bias)));
-      rgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b * scale + bias)));
+      rgba[i * 4 + 0] = Math.max(0, Math.min(255, Math.round(r * 255)));
+      rgba[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
+      rgba[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
       rgba[i * 4 + 3] = 255;
     }
     const bitmap = await createImageBitmap(new ImageData(rgba, W, H));

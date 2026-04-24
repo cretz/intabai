@@ -2,46 +2,49 @@
 // + 1 shell_post per denoising step.
 //
 // The model was exported per-block at q4f16 because the monolithic 9.4 GB
-// fp16 transformer won't fit in one WebGPU buffer on most devices (see
-// worklog entry 2026-04-18). Each block is ~92 MB on disk. We load one
-// block at a time, run it, and dispose the session before loading the
-// next, so peak GPU memory is one block plus the tokens/conditioning
-// tensors rather than 30 × 92 MB.
+// fp16 transformer won't fit in one WebGPU buffer on most devices. Each
+// block is ~92 MB on disk. We load one block at a time, run it, and dispose
+// the session before loading the next, so peak GPU memory is one block
+// plus the tokens/conditioning tensors rather than 30 * 92 MB.
 //
 // shell_pre and shell_post are kept loaded across the whole generation
-// (52 MB and 1.2 MB respectively). shell_pre is re-run per denoising step
-// because it derives timestep_proj/temb from the current timestep; the
-// encoder projection and RoPE frequencies it emits are invariant across
-// steps, so we cache those locally and hand them back into the block loop.
+// (180 MB fp16 and 1.2 MB respectively; q4 shell_pre had a NaN bug under
+// MatMulNBits acc=4, so we ship fp16). shell_pre is re-run per denoising step
+// because it derives timestep_proj/temb from the current timestep.
 //
-// Input shapes are fixed to the 480 × 832 × 81f layout the model was
-// trained on: latent [1, 48, 21, 30, 52], patch [1,2,2], so the packed
-// token sequence is 21 × 15 × 26 = 8190. If we ever support other
-// resolutions we'll need to recompute ppf/pph/ppw and the noise shape.
+// Input shapes vary by selected resolution (see FastwanShape). For 480x480
+// the latent is [1, 48, 21, 30, 30] and patch grid is 21*15*15=4725 tokens;
+// for 576x576 the latent is [1, 48, 21, 36, 36] and patch grid is
+// 21*18*18=6804 tokens. Patch size is always [1,2,2].
+//
+// io-binding: all intra-step tensor handoffs stay GPU-resident. shell_pre
+// outputs land directly in our GPU tensors, the 30 blocks ping-pong the
+// `tokens` hidden state between two GPU buffers while reusing the 5
+// invariant conditioning tensors, and shell_post writes noise_pred into
+// a GPU buffer that we download to CPU exactly once at the end. A naive
+// CPU round-trip between blocks ships ~50 MB per handoff * 30 blocks *
+// 4 steps = ~6 GB of PCIe traffic per generation; with io-binding we move
+// ~14 MB (latent in, noise_pred out).
 
 import * as ort from "onnxruntime-web";
 
 import type { ModelCache } from "../shared/model-cache";
 import { createSession, type OrtModelFile } from "../sd15/ort-helpers";
-import { copyF16Bits, f16ToF32Array } from "../sd15/fp16";
-import { FASTWAN_DEBUG_BLOCK00, FASTWAN_TX_NOOPT } from "./models";
+import {
+  createGpuTensor,
+  destroyGpuTensor,
+  getOrtGpuDevice,
+  readGpuFp16,
+  writeGpuBytes,
+} from "./gpu-io";
 
 export const FASTWAN_NUM_BLOCKS = 30;
 
-/** Fixed latent geometry at the default 480×832 resolution, 81 output
- *  frames. Latent frame count, latent spatial dims, and patch grid are
- *  derived from the pipeline config. */
+/** Resolution-independent constants from the pipeline config. */
 export const FASTWAN_LATENT_CHANNELS = 48;
 export const FASTWAN_LATENT_FRAMES = 21;
-export const FASTWAN_LATENT_H = 30;
-export const FASTWAN_LATENT_W = 52;
 export const FASTWAN_PATCH_F = 21;
-export const FASTWAN_PATCH_H = 15;
-export const FASTWAN_PATCH_W = 26;
-/** seq_len after patching = ppf * pph * ppw. */
-export const FASTWAN_SEQ_LEN =
-  FASTWAN_PATCH_F * FASTWAN_PATCH_H * FASTWAN_PATCH_W;
-/** Hidden size inside the transformer. Fixed by the model config. */
+/** Hidden size inside the transformer. */
 export const FASTWAN_HIDDEN = 3072;
 /** Text encoder output sequence length (see text-encoder.ts). */
 export const FASTWAN_TEXT_SEQ_LEN = 512;
@@ -49,6 +52,41 @@ export const FASTWAN_TEXT_SEQ_LEN = 512;
 export const FASTWAN_TIMESTEP_PROJ_ARITY = 6;
 /** RoPE head dim. Attention head dim is 128 (hidden=3072 / 24 heads). */
 export const FASTWAN_HEAD_DIM = 128;
+
+export type FastwanResolution = 480 | 576;
+
+/** Resolution-bound geometry. Computed once per generation from the user's
+ *  selected model and threaded through the pipeline. Latent dim = pixel/16,
+ *  patch dim = latent/2 (patch_size=[1,2,2]); seq_len = patch_f*patch_h*patch_w. */
+export interface FastwanShape {
+  resolution: FastwanResolution;
+  /** Output pixel height (= width; we only ship square models). */
+  pixelH: number;
+  pixelW: number;
+  /** Latent height/width (= pixel/16). */
+  latentH: number;
+  latentW: number;
+  /** Patch grid height/width (= latent/2). */
+  patchH: number;
+  patchW: number;
+  /** Packed token count = patchF * patchH * patchW. */
+  seqLen: number;
+}
+
+export function fastwanShape(resolution: FastwanResolution): FastwanShape {
+  const latent = resolution / 16;
+  const patch = latent / 2;
+  return {
+    resolution,
+    pixelH: resolution,
+    pixelW: resolution,
+    latentH: latent,
+    latentW: latent,
+    patchH: patch,
+    patchW: patch,
+    seqLen: FASTWAN_PATCH_F * patch * patch,
+  };
+}
 
 export interface TransformerFiles {
   shellPre: OrtModelFile;
@@ -64,9 +102,9 @@ export type BlockProgress = (
 ) => void;
 
 export interface ForwardInput {
-  /** Current noisy latent. [1, 48, 21, 30, 52] fp16 bits. */
+  /** Current noisy latent. [1, 48, 21, 30, 30] fp16 bits. */
   latent: Uint16Array;
-  /** Current scheduler timestep. Broadcast to [1, 8190] int64 on the wire. */
+  /** Current scheduler timestep. Broadcast to [1, 4725] int64 on the wire. */
   timestep: number;
   /** Text embeddings from the text encoder. [1, 512, 4096] fp16 bits. */
   textEmbeds: Uint16Array;
@@ -74,28 +112,41 @@ export interface ForwardInput {
    *  caller can drive a progress bar that spans all steps * all blocks. */
   stepIndex: number;
   /** Optional verbose trace of load / run / release timings for each
-   *  block plus shell_pre / shell_post. Opt-in; noisy but essential when
-   *  diagnosing a hang vs a slow block. */
+   *  block plus shell_pre / shell_post. */
   onDebug?: (msg: string) => void;
   /** Optional per-tensor stats hook for diagnosing gray-output bugs.
    *  Called with intermediate fp16-bit tensors at key stages. */
   onStatsFp16?: (name: string, bits: Uint16Array) => void;
-  /** Debug: after block_00 runs at step 1 and its hex dump is emitted,
-   *  throw via the provided callback so the pipeline halts before
-   *  blocks 1..29 execute. Block_00 itself still runs (we need its output
-   *  for the byte-diff). */
-  onStopAfterBlock00?: () => never;
+}
+
+/** Per-shape element counts for the well-known tensors. Used by readback
+ *  for stats/debug output. */
+function shapeSizes(shape: FastwanShape) {
+  const seq = shape.seqLen;
+  const txt = FASTWAN_TEXT_SEQ_LEN;
+  return {
+    tokens: 1 * seq * FASTWAN_HIDDEN,
+    encProj: 1 * txt * FASTWAN_HIDDEN,
+    timestepProj: 1 * seq * FASTWAN_TIMESTEP_PROJ_ARITY * FASTWAN_HIDDEN,
+    temb: 1 * seq * FASTWAN_HIDDEN,
+    freqs: 1 * seq * 1 * FASTWAN_HEAD_DIM,
+    noisePred:
+      1 *
+      FASTWAN_LATENT_CHANNELS *
+      FASTWAN_LATENT_FRAMES *
+      shape.latentH *
+      shape.latentW,
+  };
 }
 
 export class Transformer {
   private shellPre: ort.InferenceSession | null = null;
   private shellPost: ort.InferenceSession | null = null;
-  /** Fires the ?debugblock00=1 per-tap dump at most once per page load. */
-  private didDumpIntermediates = false;
 
   constructor(
     private readonly cache: ModelCache,
     private readonly files: TransformerFiles,
+    private readonly shape: FastwanShape,
     private readonly providers: ("webgpu" | "wasm")[] = ["webgpu", "wasm"],
   ) {
     if (files.blocks.length !== FASTWAN_NUM_BLOCKS) {
@@ -106,15 +157,11 @@ export class Transformer {
   }
 
   async load(): Promise<void> {
-    const opts: Partial<ort.InferenceSession.SessionOptions> = FASTWAN_TX_NOOPT
-      ? { graphOptimizationLevel: "disabled" }
-      : {};
     if (!this.shellPre) {
       this.shellPre = await createSession(
         this.cache,
         this.files.shellPre,
         this.providers,
-        opts,
       );
     }
     if (!this.shellPost) {
@@ -122,7 +169,6 @@ export class Transformer {
         this.cache,
         this.files.shellPost,
         this.providers,
-        opts,
       );
     }
   }
@@ -139,267 +185,228 @@ export class Transformer {
   }
 
   /** One denoising step: shell_pre -> 30 blocks -> shell_post. Returns
-   *  noise_pred as fp16 bits, shape [1, 48, 21, 30, 52]. */
+   *  noise_pred as fp16 bits, shape [1, 48, 21, 30, 30]. */
   async forward(input: ForwardInput, onBlock?: BlockProgress): Promise<Uint16Array> {
     if (!this.shellPre || !this.shellPost) {
       throw new Error("Transformer.load() must be called before forward()");
     }
 
-    // Expand scalar timestep to [1, 8190] int64. Wan 2.2 TI2V uses
-    // expand_timesteps=True: every packed token gets the same timestep.
-    const timestepArr = new BigInt64Array(FASTWAN_SEQ_LEN);
-    const tBig = BigInt(input.timestep);
-    for (let i = 0; i < FASTWAN_SEQ_LEN; i++) timestepArr[i] = tBig;
-
-    // shell_pre: latent + timestep + text embeds -> tokens + enc_proj +
-    // timestep_proj + temb + RoPE freqs.
-    const preFeeds: Record<string, ort.Tensor> = {
-      hidden_states: new ort.Tensor(
-        "float16",
-        input.latent,
-        [
-          1,
-          FASTWAN_LATENT_CHANNELS,
-          FASTWAN_LATENT_FRAMES,
-          FASTWAN_LATENT_H,
-          FASTWAN_LATENT_W,
-        ],
-      ),
-      timestep: new ort.Tensor("int64", timestepArr, [1, FASTWAN_SEQ_LEN]),
-      encoder_hidden_states: new ort.Tensor(
-        "float16",
-        input.textEmbeds,
-        [1, FASTWAN_TEXT_SEQ_LEN, 4096],
-      ),
-    };
+    const device = getOrtGpuDevice();
+    if (!device) {
+      throw new Error(
+        "Transformer: ORT-web did not materialize a WebGPU device; " +
+          "io-binding requires the webgpu EP",
+      );
+    }
     const debug = input.onDebug;
-    const tPre = performance.now();
-    const preOut = await this.shellPre.run(preFeeds);
-    debug?.(`shell_pre: ${(performance.now() - tPre).toFixed(0)} ms`);
-    // Copy out so we can release intermediate session tensors cleanly
-    // between blocks. WebGPU-backed ORT tensors can be invalidated by
-    // subsequent runs on the same session, so a fresh copy is safest.
-    let tokens = copyF16Bits(preOut.tokens.data as ArrayBufferView);
-    const encProj = copyF16Bits(preOut.enc_proj.data as ArrayBufferView);
-    const timestepProj = copyF16Bits(preOut.timestep_proj.data as ArrayBufferView);
-    const temb = copyF16Bits(preOut.temb.data as ArrayBufferView);
-    const freqsCos = new Float32Array(preOut.freqs_cos.data as Float32Array);
-    const freqsSin = new Float32Array(preOut.freqs_sin.data as Float32Array);
     const stats = input.onStatsFp16;
-    if (stats && input.stepIndex === 0) {
-      stats("shell_pre.tokens", tokens);
-      stats("shell_pre.enc_proj", encProj);
-      stats("shell_pre.timestep_proj", timestepProj);
-      stats("shell_pre.temb", temb);
-    }
-    if (debug && input.stepIndex === 0) {
-      // Hex dumps of first 32 values of each shell_pre output, for
-      // byte-diffing against a Python CPU ONNX reference. Pair with the
-      // scripts/dump-reference-shell-pre.py script.
-      dumpHex(debug, "shell_pre.tokens[tok=0,0:32]", tokens, 0);
-      dumpHex(debug, "shell_pre.enc_proj[tok=0,0:32]", encProj, 0);
-      dumpHex(debug, "shell_pre.temb[tok=0,0:32]", temb, 0);
-      // freqs are fp32; dump separately.
-      dumpHexF32(debug, "shell_pre.freqs_cos[tok=0,0:32]", freqsCos, 0);
-      dumpHexF32(debug, "shell_pre.freqs_sin[tok=0,0:32]", freqsSin, 0);
-    }
-    const tokensDims = [1, FASTWAN_SEQ_LEN, FASTWAN_HIDDEN];
-    const encProjDims = [1, FASTWAN_TEXT_SEQ_LEN, FASTWAN_HIDDEN];
-    const timestepProjDims = [
+    const wantsStats = stats && input.stepIndex === 0;
+
+    const shape = this.shape;
+    const sizes = shapeSizes(shape);
+
+    // Expand scalar timestep to [1, seqLen] int64. Wan 2.2 TI2V uses
+    // expand_timesteps=True: every packed token gets the same timestep.
+    // int64 stays on CPU; ORT routes shape/index ops to the wasm EP anyway.
+    const timestepArr = new BigInt64Array(shape.seqLen);
+    const tBig = BigInt(input.timestep);
+    for (let i = 0; i < shape.seqLen; i++) timestepArr[i] = tBig;
+
+    // ---- allocate GPU tensors ------------------------------------------------
+    // All created fresh per forward() so the buffers are cleanly destroyed
+    // before we return; cost is ~2 ms of WebGPU buffer-object churn per step,
+    // negligible versus the ~3-minute step wall time.
+    const gpuLatent = createGpuTensor(device, "float16", [
       1,
-      FASTWAN_SEQ_LEN,
+      FASTWAN_LATENT_CHANNELS,
+      FASTWAN_LATENT_FRAMES,
+      shape.latentH,
+      shape.latentW,
+    ]);
+    const gpuEncoderHS = createGpuTensor(device, "float16", [
+      1,
+      FASTWAN_TEXT_SEQ_LEN,
+      4096,
+    ]);
+    const gpuTokensA = createGpuTensor(device, "float16", [
+      1,
+      shape.seqLen,
+      FASTWAN_HIDDEN,
+    ]);
+    const gpuTokensB = createGpuTensor(device, "float16", [
+      1,
+      shape.seqLen,
+      FASTWAN_HIDDEN,
+    ]);
+    const gpuEncProj = createGpuTensor(device, "float16", [
+      1,
+      FASTWAN_TEXT_SEQ_LEN,
+      FASTWAN_HIDDEN,
+    ]);
+    const gpuTimestepProj = createGpuTensor(device, "float16", [
+      1,
+      shape.seqLen,
       FASTWAN_TIMESTEP_PROJ_ARITY,
       FASTWAN_HIDDEN,
-    ];
-    const freqsDims = [1, FASTWAN_SEQ_LEN, 1, FASTWAN_HEAD_DIM];
+    ]);
+    const gpuTemb = createGpuTensor(device, "float16", [
+      1,
+      shape.seqLen,
+      FASTWAN_HIDDEN,
+    ]);
+    const gpuFreqsCos = createGpuTensor(device, "float32", [
+      1,
+      shape.seqLen,
+      1,
+      FASTWAN_HEAD_DIM,
+    ]);
+    const gpuFreqsSin = createGpuTensor(device, "float32", [
+      1,
+      shape.seqLen,
+      1,
+      FASTWAN_HEAD_DIM,
+    ]);
+    const gpuNoisePred = createGpuTensor(device, "float16", [
+      1,
+      FASTWAN_LATENT_CHANNELS,
+      FASTWAN_LATENT_FRAMES,
+      shape.latentH,
+      shape.latentW,
+    ]);
 
-    // Block loop with double-buffered session loading: while block N runs
-    // we start compiling block N+1, so the ~500 ms load cost of the next
-    // block overlaps the ~7 s run cost of the current block. Peak GPU
-    // residency is 2 block sessions (~2 x 92 MB q4 graphs + activations),
-    // still well under mobile maxBufferSize.
-    const loadBlock = (i: number) =>
-      createSession(
-        this.cache,
-        this.files.blocks[i],
-        this.providers,
-        FASTWAN_TX_NOOPT ? { graphOptimizationLevel: "disabled" } : {},
-      );
-    // Debug mode: the ?debugblock00=1 flag swaps block_00 for a monolithic
-    // fp16 graph (~327 MB weights). Double-buffering loads block_01 while
-    // block_00 runs, so two large sessions are resident at once. Since the
-    // debug use-case always stops after block_00, skip the prefetch to
-    // keep peak GPU residency to one session.
-    const prefetchBlocks = !FASTWAN_DEBUG_BLOCK00;
-    let currentLoad = loadBlock(0);
-    for (let i = 0; i < FASTWAN_NUM_BLOCKS; i++) {
-      const blockSession = await currentLoad;
-      const tRun = performance.now();
-      // Kick off next-block load now so its compile overlaps this run.
-      let nextLoad: Promise<ort.InferenceSession> | null = null;
-      if (prefetchBlocks && i + 1 < FASTWAN_NUM_BLOCKS) {
-        nextLoad = loadBlock(i + 1);
+    const destroyAll = () => {
+      for (const t of [
+        gpuLatent,
+        gpuEncoderHS,
+        gpuTokensA,
+        gpuTokensB,
+        gpuEncProj,
+        gpuTimestepProj,
+        gpuTemb,
+        gpuFreqsCos,
+        gpuFreqsSin,
+        gpuNoisePred,
+      ]) destroyGpuTensor(t);
+    };
+
+    try {
+      // ---- shell_pre --------------------------------------------------------
+      writeGpuBytes(device, gpuLatent, input.latent);
+      writeGpuBytes(device, gpuEncoderHS, input.textEmbeds);
+      const preFeeds: Record<string, ort.Tensor> = {
+        hidden_states: gpuLatent,
+        timestep: new ort.Tensor("int64", timestepArr, [1, shape.seqLen]),
+        encoder_hidden_states: gpuEncoderHS,
+      };
+      const preFetches: Record<string, ort.Tensor> = {
+        tokens: gpuTokensA,
+        enc_proj: gpuEncProj,
+        timestep_proj: gpuTimestepProj,
+        temb: gpuTemb,
+        freqs_cos: gpuFreqsCos,
+        freqs_sin: gpuFreqsSin,
+      };
+      const tPre = performance.now();
+      await this.shellPre.run(preFeeds, preFetches);
+      debug?.(`shell_pre: ${(performance.now() - tPre).toFixed(0)} ms`);
+
+      if (wantsStats) {
+        const [tokensBits, encProjBits, timestepProjBits, tembBits] =
+          await Promise.all([
+            readGpuFp16(device, gpuTokensA, sizes.tokens),
+            readGpuFp16(device, gpuEncProj, sizes.encProj),
+            readGpuFp16(device, gpuTimestepProj, sizes.timestepProj),
+            readGpuFp16(device, gpuTemb, sizes.temb),
+          ]);
+        stats!("shell_pre.tokens", tokensBits);
+        stats!("shell_pre.enc_proj", encProjBits);
+        stats!("shell_pre.timestep_proj", timestepProjBits);
+        stats!("shell_pre.temb", tembBits);
       }
-      try {
-        const feeds: Record<string, ort.Tensor> = {
-          hidden_states: new ort.Tensor("float16", tokens, tokensDims),
-          encoder_hidden_states: new ort.Tensor("float16", encProj, encProjDims),
-          timestep_proj: new ort.Tensor(
-            "float16",
-            timestepProj,
-            timestepProjDims,
-          ),
-          freqs_cos: new ort.Tensor("float32", freqsCos, freqsDims),
-          freqs_sin: new ort.Tensor("float32", freqsSin, freqsDims),
-        };
-        const result = await blockSession.run(feeds);
-        debug?.(`block ${i}: ${(performance.now() - tRun).toFixed(0)} ms`);
-        const out =
-          result.hidden_states_out ?? result[Object.keys(result)[0]];
-        tokens = copyF16Bits(out.data as ArrayBufferView);
-        if (stats && input.stepIndex === 0 && (i === 0 || i === FASTWAN_NUM_BLOCKS - 1)) {
-          stats(`block_${i.toString().padStart(2, "0")}.out`, tokens);
-        }
-        if (debug && input.stepIndex === 0 && i === 0) {
-          dumpHex(debug, "block_00.out[tok=0,0:32]", tokens, 0);
-        }
-        if (
-          debug &&
-          FASTWAN_DEBUG_BLOCK00 &&
-          input.stepIndex === 0 &&
-          i === 0 &&
-          !this.didDumpIntermediates
-        ) {
-          this.didDumpIntermediates = true;
-          dumpAllTaps(debug, result);
-        }
-        if (input.onStopAfterBlock00 && input.stepIndex === 0 && i === 0) {
-          debug?.("stopAfterBlock00 set - halting after block_00");
+
+      // ---- block loop with double-buffered session loading + ping-pong ------
+      const loadBlock = (i: number) =>
+        createSession(this.cache, this.files.blocks[i], this.providers);
+
+      // After shell_pre, tokens are in gpuTokensA. Each block reads from
+      // `currTokens` and writes to `nextTokens`; then we swap. Conditioning
+      // tensors (encProj/timestepProj/freqsCos/freqsSin) are the same across
+      // all 30 blocks, so we just hand them back in as feeds each iteration.
+      let currTokens = gpuTokensA;
+      let nextTokens = gpuTokensB;
+
+      let currentLoad = loadBlock(0);
+      for (let i = 0; i < FASTWAN_NUM_BLOCKS; i++) {
+        const blockSession = await currentLoad;
+        const tRun = performance.now();
+        const nextLoad: Promise<ort.InferenceSession> | null =
+          i + 1 < FASTWAN_NUM_BLOCKS ? loadBlock(i + 1) : null;
+        try {
+          const feeds: Record<string, ort.Tensor> = {
+            hidden_states: currTokens,
+            encoder_hidden_states: gpuEncProj,
+            timestep_proj: gpuTimestepProj,
+            freqs_cos: gpuFreqsCos,
+            freqs_sin: gpuFreqsSin,
+          };
+          const fetches: Record<string, ort.Tensor> = {
+            hidden_states_out: nextTokens,
+          };
+          await blockSession.run(feeds, fetches);
+          debug?.(`block ${i}: ${(performance.now() - tRun).toFixed(0)} ms`);
+
+          // Stats readback for first and last block on step 0 only - cheap
+          // sanity check that block output isn't all NaN / all zero.
+          const isFirstOrLast = i === 0 || i === FASTWAN_NUM_BLOCKS - 1;
+          if (wantsStats && isFirstOrLast) {
+            const outBits = await readGpuFp16(device, nextTokens, sizes.tokens);
+            stats!(
+              `block_${i.toString().padStart(2, "0")}.out`,
+              outBits,
+            );
+          }
+        } catch (err) {
           if (nextLoad) {
             nextLoad.then((s) => s.release()).catch(() => {});
-            nextLoad = null;
           }
-          input.onStopAfterBlock00();
+          throw err;
+        } finally {
+          await blockSession.release();
         }
-      } catch (err) {
-        // Block run failed — make sure the prefetched next session is
-        // cleaned up before we propagate, otherwise its GPU memory leaks.
-        if (nextLoad) {
-          nextLoad.then((s) => s.release()).catch(() => {});
-        }
-        throw err;
-      } finally {
-        await blockSession.release();
+        onBlock?.(input.stepIndex, i + 1, FASTWAN_NUM_BLOCKS);
+
+        // Ping-pong: the block just wrote its output into nextTokens, which
+        // becomes the input for block i+1.
+        const swap = currTokens;
+        currTokens = nextTokens;
+        nextTokens = swap;
+
+        currentLoad = nextLoad as Promise<ort.InferenceSession>;
       }
-      onBlock?.(input.stepIndex, i + 1, FASTWAN_NUM_BLOCKS);
-      currentLoad = nextLoad as Promise<ort.InferenceSession>;
-    }
 
-    // shell_post: tokens + temb + int64 patch dims -> noise_pred.
-    const ppfArr = new BigInt64Array([BigInt(FASTWAN_PATCH_F)]);
-    const pphArr = new BigInt64Array([BigInt(FASTWAN_PATCH_H)]);
-    const ppwArr = new BigInt64Array([BigInt(FASTWAN_PATCH_W)]);
-    const postFeeds: Record<string, ort.Tensor> = {
-      hidden_states: new ort.Tensor("float16", tokens, tokensDims),
-      temb: new ort.Tensor("float16", temb, tokensDims),
-      ppf: new ort.Tensor("int64", ppfArr, []),
-      pph: new ort.Tensor("int64", pphArr, []),
-      ppw: new ort.Tensor("int64", ppwArr, []),
-    };
-    const tPost = performance.now();
-    const postOut = await this.shellPost.run(postFeeds);
-    debug?.(`shell_post: ${(performance.now() - tPost).toFixed(0)} ms`);
-    const noise =
-      postOut.noise_pred ?? postOut[Object.keys(postOut)[0]];
-    return copyF16Bits(noise.data as ArrayBufferView);
-  }
-}
+      // ---- shell_post -------------------------------------------------------
+      const ppfArr = new BigInt64Array([BigInt(FASTWAN_PATCH_F)]);
+      const pphArr = new BigInt64Array([BigInt(shape.patchH)]);
+      const ppwArr = new BigInt64Array([BigInt(shape.patchW)]);
+      const postFeeds: Record<string, ort.Tensor> = {
+        hidden_states: currTokens,
+        temb: gpuTemb,
+        ppf: new ort.Tensor("int64", ppfArr, []),
+        pph: new ort.Tensor("int64", pphArr, []),
+        ppw: new ort.Tensor("int64", ppwArr, []),
+      };
+      const postFetches: Record<string, ort.Tensor> = {
+        noise_pred: gpuNoisePred,
+      };
+      const tPost = performance.now();
+      await this.shellPost.run(postFeeds, postFetches);
+      debug?.(`shell_post: ${(performance.now() - tPost).toFixed(0)} ms`);
 
-function dumpHex(
-  debug: (msg: string) => void,
-  label: string,
-  bits: Uint16Array,
-  offset: number,
-): void {
-  const slice = bits.subarray(offset, offset + 32);
-  const f32 = f16ToF32Array(slice);
-  const hex = Array.from(slice).map((b) => b.toString(16).padStart(4, "0")).join(",");
-  debug(`${label} f32=[${Array.from(f32).map((v) => v.toFixed(4)).join(",")}]`);
-  debug(`${label} hex=${hex}`);
-}
-
-function dumpHexF32(
-  debug: (msg: string) => void,
-  label: string,
-  values: Float32Array,
-  offset: number,
-): void {
-  const slice = values.subarray(offset, offset + 32);
-  const hex = Array.from(slice).map((v) => {
-    const u32 = new Uint32Array(new Float32Array([v]).buffer)[0];
-    return u32.toString(16).padStart(8, "0");
-  }).join(",");
-  debug(`${label} f32=[${Array.from(slice).map((v) => v.toFixed(6)).join(",")}]`);
-  debug(`${label} hex32=${hex}`);
-}
-
-/** Emit stats + first-32-element hex for every tensor in an ORT result
- *  dict. Output format matches dump-reference-block-00.py --debug so the
- *  two logs diff line-by-line. Called only when the debug graph
- *  block_00_debug.onnx is loaded and ?debugblock00=1 is set. */
-function dumpAllTaps(
-  debug: (msg: string) => void,
-  result: Record<string, ort.Tensor>,
-): void {
-  const names = Object.keys(result);
-  debug(`block_00_debug: ${names.length} outputs`);
-  for (const name of names) {
-    const t = result[name];
-    if (t.type === "float16") {
-      const bits = copyF16Bits(t.data as ArrayBufferView);
-      const total = bits.length;
-      const f32 = f16ToF32Array(bits);
-      const { mn, mx, mean, nan, zeros } = statsF32(f32);
-      debug(
-        `stats[${name}] n=${total} min=${mn.toFixed(4)} max=${mx.toFixed(4)} ` +
-          `mean=${mean.toFixed(4)} nan=${nan} zeros=${zeros}`,
-      );
-      dumpHex(debug, `${name}[tok=0,0:32]`, bits, 0);
-    } else if (t.type === "float32") {
-      const data = t.data as Float32Array;
-      const { mn, mx, mean, nan, zeros } = statsF32(data);
-      debug(
-        `stats[${name}] n=${data.length} min=${mn.toFixed(4)} max=${mx.toFixed(4)} ` +
-          `mean=${mean.toFixed(4)} nan=${nan} zeros=${zeros}`,
-      );
-      dumpHexF32(debug, `${name}[tok=0,0:32]`, data, 0);
-    } else {
-      // int64 / int32 / bool taps from shape-math subgraphs. Print head
-      // values as ints so the format still line-diffs meaningfully.
-      const data = t.data as ArrayLike<number | bigint>;
-      const n = data.length;
-      const head = Array.from({ length: Math.min(32, n) }, (_, i) =>
-        String(data[i]),
-      );
-      debug(`stats[${name}] n=${n} dtype=${t.type}`);
-      debug(`${name}[tok=0,0:32] dtype=${t.type} ints=[${head.join(",")}]`);
+      // Final readback to CPU (scheduler math runs in fp32 in JS).
+      return await readGpuFp16(device, gpuNoisePred, sizes.noisePred);
+    } finally {
+      destroyAll();
     }
   }
 }
 
-function statsF32(arr: Float32Array | ArrayLike<number>): {
-  mn: number; mx: number; mean: number; nan: number; zeros: number;
-} {
-  let mn = Infinity, mx = -Infinity, sum = 0, nan = 0, zeros = 0;
-  const n = arr.length;
-  for (let i = 0; i < n; i++) {
-    const v = arr[i] as number;
-    if (Number.isNaN(v)) { nan++; continue; }
-    if (v < mn) mn = v;
-    if (v > mx) mx = v;
-    sum += v;
-    if (v === 0) zeros++;
-  }
-  const denom = Math.max(1, n - nan);
-  return { mn, mx, mean: sum / denom, nan, zeros };
-}

@@ -216,8 +216,8 @@ def main():
         type=Path,
         help="Output directory for ONNX files",
     )
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--width", type=int, default=832)
+    parser.add_argument("--height", type=int, required=True)
+    parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--num-frames", type=int, default=81)
     parser.add_argument("--seq-len", type=int, default=512,
                         help="Text encoder sequence length (default: 512)")
@@ -539,8 +539,16 @@ def main():
             )
             # Seq-chunk attn1 to keep Q*K^T under the 2 GiB WebGPU
             # maxBufferSize cap. See lib/chunk_attn1.py + notes/ort-fp16-bugs.md
-            # section 5. CPU/CUDA math is unchanged.
-            chunk_attn1_file(block_path, n_chunks=3)
+            # section 5. CPU/CUDA math is unchanged. Only needed when
+            # heads * seq_len^2 * 2 bytes > 2 GiB; below that, chunking adds
+            # graph nodes for no reason and breaks at runtime since the lib
+            # still hardcodes the 8190-shape split sizes.
+            heads = config.get("num_attention_heads", 24)
+            qkt_bytes = heads * real_ts_seq_len * real_ts_seq_len * 2
+            if qkt_bytes > (2 << 30):
+                chunk_attn1_file(block_path, n_chunks=3, seq_len=real_ts_seq_len)
+            else:
+                log(f"    skipping attn1 chunking (Q*K^T {qkt_bytes/1e9:.2f} GB < 2 GiB cap)")
             size_mb = block_path.stat().st_size / 1e6
             dt = time.time() - t0
             log(f"  block {i+1}/{num_blocks} -> {block_path.name} ({size_mb:.1f} MB, {dt:.1f}s)")

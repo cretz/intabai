@@ -16,7 +16,7 @@ from pathlib import Path
 
 import onnx
 
-from lib.chunk_attn1 import chunk_attn1, SEQ_LEN
+from lib.chunk_attn1 import chunk_attn1
 
 
 def main() -> int:
@@ -24,12 +24,14 @@ def main() -> int:
     ap.add_argument("input", type=Path)
     ap.add_argument("output", type=Path)
     ap.add_argument("--n", type=int, default=3, help="number of seq chunks")
+    ap.add_argument("--seq-len", type=int, required=True,
+                    help="exact attn1 seq_len (e.g. 4725 for 480x480, 8190 for 480x832)")
     args = ap.parse_args()
 
     print(f"loading {args.input}")
     model = onnx.load(str(args.input))
-    print(f"rewriting attn1 with N={args.n} chunks (size {SEQ_LEN // args.n})")
-    model = chunk_attn1(model, args.n)
+    print(f"rewriting attn1 with N={args.n} chunks (size {args.seq_len // args.n})")
+    model = chunk_attn1(model, args.n, seq_len=args.seq_len)
 
     print("checking model")
     onnx.checker.check_model(model, full_check=False)

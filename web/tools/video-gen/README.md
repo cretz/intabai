@@ -8,7 +8,7 @@ leaves your tab.
 
 ## Models
 
-- [FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers](https://huggingface.co/FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers) - DMD-distilled Wan 2.2 TI2V-5B, 3 denoising steps, 480x832 @ 16fps, 81 frames (5 seconds). Sharded + quantized ONNX build hosted at `cretz/FastWan2.2-TI2V-5B-ONNX` (~6.5 GB total).
+[FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers](https://huggingface.co/FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers) - DMD-distilled Wan 2.2 TI2V-5B, 4 UniPC steps at flow_shift=8 (matching [KingNish/wan2-2-fast](https://huggingface.co/spaces/KingNish/wan2-2-fast)), 81 frames @ 16 fps = 5s clips. Sharded + quantized ONNX bundles will live at `cretz/FastWan2.2-TI2V-5B-ONNX` (not yet uploaded). Four bundles ship: 480×480 and 576×576, each in q4f16 (mobile + desktop, ~6.5 GB) and fp16 transformer (desktop only, ~9.4 GB extra, ~25% faster per step). Shared across all four: UMT5-XXL q4f16 text encoder + LightTAE fp16 VAE.
 
 ## Features
 
@@ -48,14 +48,15 @@ that edge hold.
 
 ### The `maxBufferSize` cliff (the big one)
 
-- attn1 in every block wants to materialize a Q.K^T intermediate of
-  shape [1, 24 heads, 8190, 8190] fp16, which is 3.07 GiB: larger than
-  the 2 GiB `maxBufferSize` every WebGPU device we tested reports. The
-  allocation silently short-allocates, only ~128 of 25M output
+- attn1 in every block wants to materialize a Q.K^T intermediate that
+  scales as seq². At 480×832 (seq=8190) it's 3.07 GiB - larger than
+  the 2 GiB `maxBufferSize` every WebGPU device we tested reports.
+  The allocation silently short-allocates, only ~128 of 25M output
   positions get written, and every downstream block sees garbage.
 - Solution: rewrite attn1 at export time to split Q along the sequence
-  axis into three chunks of 2730, run three `MatMul + Softmax + MatMul`
-  pairs, and `Concat` the results. Same math, same FLOPs, fits.
+  axis into chunks, run a `MatMul + Softmax + MatMul` per chunk, and
+  `Concat`. Same math, same FLOPs, fits. The chunker takes `--seq-len`
+  and is auto-skipped when Q·K^T fits (true at 480×480 / seq=4725).
 
 ### ORT-web kernel bugs we had to patch
 
@@ -90,15 +91,21 @@ that edge hold.
   `sigma = flow_shift * s / (1 + (shift-1)*s)` applies the shift a
   second time because the FastVideo scheduler has already baked it
   into the timesteps. Correct formula: `sigma = t / 1000`.
-- **UniPC sampler produced bland pastel output** with DMD-distilled
-  weights (the model expects direct x0 prediction, not higher-order
-  solver steps). Replaced with the inlined DMD loop:
-  `x0 = latent - sigma_t * noise_pred`, re-noise between steps.
-- **Timesteps for TI2V-5B are `[1000, 757, 522]`**, not the A14B
-  variant's `[1000, 750, 500, 250]`. Wrong constants also produced
-  pastel output. Source of truth is in FastVideo's pipeline configs.
-- **Timestep is a 2D `[B, 8190]` tensor**, not a scalar: every token
-  gets its own timestep value for Wan 2.2 TI2V.
+- **Scheduler had to match the HF Space exactly.** First pass with
+  plain UniPC produced bland pastel; a direct DMD x0 loop fixed that
+  but still missed the Space's quality. Settled on UniPC with flow
+  sigmas, predict_x0, flow_prediction, bh2, solver_order=2 with
+  corrector, 4 steps, flow_shift=8 (Space overrides the config's 5.0).
+- **Flow-matching sigma was double-shifted.** The obvious
+  `sigma = flow_shift * s / (1 + (shift-1)*s)` re-applies a shift
+  the FastVideo scheduler already baked into timesteps. Correct:
+  `sigma = t / 1000`.
+- **Timestep is a 2D `[B, seq_len]` tensor**, not a scalar: every
+  token gets its own timestep for Wan 2.2 TI2V.
+- **Padded text-embed positions need to be JS-zero-filled.** Our
+  transformer blocks have no encoder_attention_mask input, so without
+  zeroing the 504 padded positions the prompt drowns in padding
+  (symptom: prompt-agnostic fabric texture).
 
 ### Export-time landmines
 
@@ -163,18 +170,18 @@ that edge hold.
   power-state transitions that are the #1 source of AER corrected
   errors on the link.
 
+## Known issues
+
+- 480×480 output is coherent but blocky and topically off vs the HF
+  Space at the same prompt. RNG mismatch (mulberry32 vs torch.randn)
+  explains "different content"; the blockiness is the open part.
+  Forensics plan in `notes/worklog.md` "Current task".
+
 ## TODO
 
-- Upload the quantized shards to `cretz/FastWan2.2-TI2V-5B-ONNX` and
-  switch `FASTWAN_BASE` off the local dev proxy
-- Mobile run: verify block residency + `maxBufferSize` on flagship
-  Android Chrome (desktop confirmed)
-- Perf: io-binding on block sessions and GPU-resident constants
-  (estimated 25-35% combined win, not shipping-critical)
-- First-frame I2V: the transformer supports it natively via latent
-  injection; UI doesn't expose it yet
-- Custom resolution / frame count (currently locked to 480x832, 81
-  frames)
+- Upload quantized shards to `cretz/FastWan2.2-TI2V-5B-ONNX` and flip
+  `FASTWAN_BASE` off the local dev proxy
+- Mobile verification on flagship Android Chrome (desktop confirmed)
+- First-frame I2V (transformer supports it; UI doesn't expose it)
 - Wake lock during long generation
-- Intermediate frame download (save latent snapshot between steps)
 - Hotkey to cancel mid-generation and free the GPU

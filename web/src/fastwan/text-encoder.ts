@@ -24,7 +24,6 @@ import type { ModelCache } from "../shared/model-cache";
 import { createSession, type OrtModelFile } from "../sd15/ort-helpers";
 import { copyF16Bits, f32ToF16Bits } from "../sd15/fp16";
 import { TokenEmbedding, UMT5_HIDDEN_SIZE } from "./embedding";
-import { FASTWAN_TEXT_MASK_MAG } from "./models";
 
 /** UMT5-XXL layer count (encoder-only; it's an encoder model). */
 export const UMT5_NUM_LAYERS = 24;
@@ -34,10 +33,10 @@ export const UMT5_MAX_SEQ_LEN = 512;
 
 /** fp16 bit pattern for 0.0. */
 const F16_ZERO = 0x0000;
-/** fp16 bit pattern for the mask-fill magnitude. Negated so attended=0,
- *  padded=-|mag|. Default -65504 (fp16 min finite); overridable via
- *  `?textmaskmag=N` for the WebGPU SDPA fp16-near-min-finite hypothesis. */
-const F16_NEG_LARGE = f32ToF16Bits(-FASTWAN_TEXT_MASK_MAG);
+/** fp16 bit pattern for -65504 (fp16 min finite). UMT5 layers add this on
+ *  pre-softmax scores at padded positions; -inf can NaN through SDPA on
+ *  some EPs, hence the finite floor. */
+const F16_NEG_LARGE = f32ToF16Bits(-65504);
 
 export interface TextEncoderFiles {
   /** 24 layer files, index 0..23. Each is a (graph, data) pair. */

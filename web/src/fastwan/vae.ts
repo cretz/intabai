@@ -5,30 +5,37 @@
 // working kernels for; LightTAE is pure Conv2D, same op family as SD1.5
 // VAE decode, and produced a clean WebGPU smoke on 2026-04-18.
 //
-// Input latent shape is fixed by the transformer geometry:
-//   [1, T=21, C=48, H=30, W=52] fp16
+// Input latent shape varies by selected resolution:
+//   [1, T=21, C=48, H, W] fp16 where H=W=resolution/16 (30 for 480, 36 for 576).
 // Output:
-//   [1, F=81, 3, 480, 832] fp16, channel-first RGB in [-1, 1].
+//   [1, F=81, 3, resolution, resolution] fp16, channel-first RGB in [-1, 1].
 // The UI-side framing code (rgba bytes, videoframes) lives in the
 // pipeline, not here - this module just runs the ONNX session.
 //
-// WanVaeDecoder below is the full AutoencoderKLWan path. Two sequential
-// ONNX graphs (init + step) sharing a 32-tensor cache contract; gated in
-// generate.ts behind `?vaekl=1`.
+// WanVaeDecoder below is the full AutoencoderKLWan path. It is DEAD CODE,
+// kept for reference only - no caller, not wired into the pipeline. See
+// the banner above the class for context.
 
 import * as ort from "onnxruntime-web";
 
 import type { ModelCache } from "../shared/model-cache";
 import { createSession, type OrtModelFile } from "../sd15/ort-helpers";
 import { copyF16Bits } from "../sd15/fp16";
+import {
+  copyGpuTensorsBatch,
+  createGpuTensor,
+  destroyGpuTensor,
+  getOrtGpuDevice,
+  readGpuFp16,
+  writeGpuBytes,
+} from "./gpu-io";
 
+/** Resolution-independent constants. Spatial dims live on FastwanShape. */
 export const LIGHTTAE_LATENT_T = 21;
 export const LIGHTTAE_LATENT_C = 48;
-export const LIGHTTAE_LATENT_H = 30;
-export const LIGHTTAE_LATENT_W = 52;
 export const LIGHTTAE_OUT_FRAMES = 81;
-export const LIGHTTAE_OUT_H = 480;
-export const LIGHTTAE_OUT_W = 832;
+
+import type { FastwanShape } from "./transformer";
 
 export class VaeDecoder {
   private session: ort.InferenceSession | null = null;
@@ -36,6 +43,7 @@ export class VaeDecoder {
   constructor(
     private readonly cache: ModelCache,
     private readonly file: OrtModelFile,
+    private readonly shape: FastwanShape,
   ) {}
 
   async load(): Promise<void> {
@@ -49,15 +57,16 @@ export class VaeDecoder {
     this.session = null;
   }
 
-  /** Decode latents (fp16 bits, shape [1, 21, 48, 30, 52]) to frames
-   *  (fp16 bits, shape [1, 81, 3, 480, 832], channel-first RGB in [-1,1]). */
+  /** Decode latents (fp16 bits, shape [1, 21, 48, latentH, latentW]) to
+   *  frames (fp16 bits, shape [1, 81, 3, pixelH, pixelW], channel-first
+   *  RGB in [-1,1]). */
   async decode(latents: Uint16Array): Promise<Uint16Array> {
     if (!this.session) throw new Error("VaeDecoder.load() must be called first");
     const feeds: Record<string, ort.Tensor> = {
       latents: new ort.Tensor(
         "float16",
         latents,
-        [1, LIGHTTAE_LATENT_T, LIGHTTAE_LATENT_C, LIGHTTAE_LATENT_H, LIGHTTAE_LATENT_W],
+        [1, LIGHTTAE_LATENT_T, LIGHTTAE_LATENT_C, this.shape.latentH, this.shape.latentW],
       ),
     };
     const results = await this.session.run(feeds);
@@ -68,6 +77,24 @@ export class VaeDecoder {
   }
 }
 
+// ============================================================================
+// DEAD CODE - WanVaeDecoder below is no longer wired into the pipeline.
+//
+// Originally gated behind `?vaekl=1` for a final-decode quality A/B against
+// LightTAE. The A/B confirmed the swap did not improve quality (see
+// notes/image.png vs notes/image-previous.png), so generate.ts always uses
+// LightTAE now. The class is retained because the ONNX export pipeline
+// (web/scripts/export-fastwan-vae-kl-streaming.py with --decompose-conv3d),
+// the 32-slot streaming-cache contract, and the GPU-resident io-binding
+// loop took real work to land. If we ever revisit Wan VAE on the web (say,
+// once ORT-web ships a working Conv3D kernel) this is the entry point.
+//
+// Constants below are frozen at the original 480x832 / T=21 export and
+// will not match a fresh re-export. Re-probe via the export script before
+// re-enabling. No model files reference WAN_VAE_LATENT_* anymore;
+// fastwan/models.ts no longer ships the decoder_init/step ONNX entries.
+// ============================================================================
+
 // ---- Full AutoencoderKLWan streaming decoder ------------------------------
 //
 // Two ONNX graphs (decoder_init, decoder_step) share a 32-tensor fp16 cache
@@ -77,9 +104,12 @@ export class VaeDecoder {
 // Total: 1 + 20*4 = 81 output frames. Each call emits frames as
 // [1, 3, T, 480, 832] fp16 in [-1, 1] (torch.clamp in the export wrapper).
 //
-// Cache shapes (captured by the export probe, fixed at default resolution):
-// 1.4 GB fp16 total. All 32 entries are carried CPU<->GPU every step today
-// because there's no io-binding yet; that's the biggest perf knob left.
+// io-binding: the 32-tensor cache (1.4 GB fp16) stays GPU-resident across
+// all 20 step iterations. Per-step we keep two pre-allocated cache sets
+// and ping-pong between them via GPU-to-GPU copies. Only the per-frame
+// latent (~0.3 MB) is uploaded and the per-call frames output
+// (~9.6 MB for step, ~2.4 MB for init) is downloaded. Without this the
+// pipeline round-trips ~56 GB across PCIe per decode; with it, ~200 MB.
 
 export const WAN_VAE_LATENT_C = 48;
 export const WAN_VAE_LATENT_T = 21;
@@ -101,6 +131,14 @@ export const WAN_VAE_CACHE_SHAPES: readonly (readonly number[])[] = [
 
 function cacheName(kind: "in" | "out", i: number): string {
   return `cache_${kind}_${i.toString().padStart(2, "0")}`;
+}
+
+function cacheElementCount(shape: readonly number[]): number {
+  return shape.reduce((a, b) => a * b, 1);
+}
+
+function cacheByteLength(shape: readonly number[]): number {
+  return cacheElementCount(shape) * 2;
 }
 
 /** Extract a single time-slice of a [1, C, T, H, W] fp16 latent into a
@@ -168,7 +206,10 @@ export class WanVaeDecoder {
   /** Decode latent [1, C=48, T=21, H=30, W=52] fp16 bits to frames
    *  [1, F=81, 3, 480, 832] fp16 bits. Native output range is [-1, 1];
    *  caller is responsible for rescaling before display. Progress callback
-   *  fires once per frame-group (init: 1 frame, each step: 4 frames). */
+   *  fires once per frame-group (init: 1 frame, each step: 4 frames).
+   *
+   *  All intermediate cache tensors stay GPU-resident across the full
+   *  decode via io-binding - see module header for rationale. */
   async decode(
     latents: Uint16Array,
     onProgress?: (doneFrames: number, totalFrames: number) => void,
@@ -190,68 +231,155 @@ export class WanVaeDecoder {
     const out = new Uint16Array(F * 3 * outH * outW);
     let framesDone = 0;
 
-    // ---- init: frame 0 -----------------------------------------------------
+    // Pre-create the init session so ORT has materialized its WebGPU device
+    // before we try to allocate GPU buffers.
     this.initSession = await createSession(this.cache, this.initFile, [
       "webgpu",
       "wasm",
     ]);
-    let caches: Uint16Array[];
-    try {
-      const frame0 = sliceLatentFrame(latents, 0, C, T, H, W);
-      const feeds: Record<string, ort.Tensor> = {
-        latent: new ort.Tensor("float16", frame0, [1, C, 1, H, W]),
-      };
-      const results = await this.initSession.run(feeds);
-      const frames = results["frames"];
-      if (!frames) throw new Error("decoder_init produced no frames output");
-      writeFramesTransposed(out, copyF16Bits(frames.data as ArrayBufferView), 1, 0, outH, outW);
-      framesDone = 1;
-      onProgress?.(framesDone, F);
-      // Harvest cache_out_NN tensors as Uint16Array (fp16 bits).
-      caches = WAN_VAE_CACHE_SHAPES.map((_, i) => {
-        const t = results[cacheName("out", i)];
-        if (!t) throw new Error(`decoder_init missing ${cacheName("out", i)}`);
-        return copyF16Bits(t.data as ArrayBufferView);
-      });
-    } finally {
-      await this.initSession.release();
-      this.initSession = null;
+    const device = getOrtGpuDevice();
+    if (!device) {
+      throw new Error(
+        "WanVaeDecoder: ORT-web did not materialize a WebGPU device; " +
+          "io-binding requires the webgpu EP",
+      );
     }
 
-    // ---- step: frames 1..20 (4 frames each) --------------------------------
-    this.stepSession = await createSession(this.cache, this.stepFile, [
-      "webgpu",
-      "wasm",
-    ]);
+    // Allocate two cache sets (A, B) for ping-pong. Each iteration reads
+    // from one set and writes to the other, then we GPU-copy the writes
+    // back for the next iteration (simpler than swapping feed bindings
+    // across 64 tensors). Both sets persist for the whole decode.
+    const cacheA: ort.Tensor[] = WAN_VAE_CACHE_SHAPES.map((shape) =>
+      createGpuTensor(device, "float16", shape),
+    );
+    const cacheB: ort.Tensor[] = WAN_VAE_CACHE_SHAPES.map((shape) =>
+      createGpuTensor(device, "float16", shape),
+    );
+
+    // Latent-per-frame input: [1, C, 1, H, W] fp16. Reused across init +
+    // every step; we re-upload per frame with writeGpuBytes.
+    const latentFrameDims = [1, C, 1, H, W] as const;
+    const gpuLatent = createGpuTensor(
+      device,
+      "float16",
+      Array.from(latentFrameDims),
+    );
+
+    // Frames output buffers. Init emits 1 frame, step emits 4 frames;
+    // allocate separate fixed-shape buffers so we don't reallocate.
+    const initFramesDims = [1, 3, 1, outH, outW] as const;
+    const stepFramesDims = [1, 3, 4, outH, outW] as const;
+    const gpuFramesInit = createGpuTensor(
+      device,
+      "float16",
+      Array.from(initFramesDims),
+    );
+    const gpuFramesStep = createGpuTensor(
+      device,
+      "float16",
+      Array.from(stepFramesDims),
+    );
+
+    const initFrameCount = 1 * 3 * 1 * outH * outW;
+    const stepFrameCount = 1 * 3 * 4 * outH * outW;
+
     try {
+      // ---- init: frame 0 --------------------------------------------------
+      {
+        const frame0 = sliceLatentFrame(latents, 0, C, T, H, W);
+        writeGpuBytes(device, gpuLatent, frame0);
+
+        // Init writes to cacheA as cache_out_NN; cacheB is unused on this
+        // first call.
+        const feeds: Record<string, ort.Tensor> = { latent: gpuLatent };
+        const fetches: Record<string, ort.Tensor> = { frames: gpuFramesInit };
+        for (let i = 0; i < WAN_VAE_CACHE_SHAPES.length; i++) {
+          fetches[cacheName("out", i)] = cacheA[i];
+        }
+        await this.initSession.run(feeds, fetches);
+        const framesBits = await readGpuFp16(
+          device,
+          gpuFramesInit,
+          initFrameCount,
+        );
+        writeFramesTransposed(out, framesBits, 1, 0, outH, outW);
+        framesDone = 1;
+        onProgress?.(framesDone, F);
+      }
+
+      // Release the init session before loading step. Cache A survives
+      // (we own its GPUBuffers, not the session).
+      await this.initSession.release();
+      this.initSession = null;
+
+      // ---- step: frames 1..20 (4 frames each) -----------------------------
+      this.stepSession = await createSession(this.cache, this.stepFile, [
+        "webgpu",
+        "wasm",
+      ]);
+
+      // Ping-pong: on iteration t we feed `inSet` as cache_in and receive
+      // into `outSet` as cache_out, then copy outSet -> inSet on GPU and
+      // repeat. After init, cacheA holds the most recent state, so inSet
+      // starts as cacheA.
+      let inSet = cacheA;
+      let outSet = cacheB;
+
+      const copyPairs: Array<{
+        src: ort.Tensor;
+        dst: ort.Tensor;
+        byteLength: number;
+      }> = WAN_VAE_CACHE_SHAPES.map((shape, i) => ({
+        src: outSet[i],
+        dst: inSet[i],
+        byteLength: cacheByteLength(shape),
+      }));
+
       for (let t = 1; t < T; t++) {
         const frameT = sliceLatentFrame(latents, t, C, T, H, W);
-        const feeds: Record<string, ort.Tensor> = {
-          latent: new ort.Tensor("float16", frameT, [1, C, 1, H, W]),
-        };
+        writeGpuBytes(device, gpuLatent, frameT);
+
+        const feeds: Record<string, ort.Tensor> = { latent: gpuLatent };
+        const fetches: Record<string, ort.Tensor> = { frames: gpuFramesStep };
         for (let i = 0; i < WAN_VAE_CACHE_SHAPES.length; i++) {
-          feeds[cacheName("in", i)] = new ort.Tensor(
-            "float16",
-            caches[i],
-            WAN_VAE_CACHE_SHAPES[i].slice(),
-          );
+          feeds[cacheName("in", i)] = inSet[i];
+          fetches[cacheName("out", i)] = outSet[i];
         }
-        const results = await this.stepSession.run(feeds);
-        const frames = results["frames"];
-        if (!frames) throw new Error("decoder_step produced no frames output");
-        writeFramesTransposed(out, copyF16Bits(frames.data as ArrayBufferView), 4, framesDone, outH, outW);
+        await this.stepSession.run(feeds, fetches);
+
+        const framesBits = await readGpuFp16(
+          device,
+          gpuFramesStep,
+          stepFrameCount,
+        );
+        writeFramesTransposed(out, framesBits, 4, framesDone, outH, outW);
         framesDone += 4;
-        // Update caches for next iteration.
-        for (let i = 0; i < WAN_VAE_CACHE_SHAPES.length; i++) {
-          const co = results[cacheName("out", i)];
-          if (!co) throw new Error(`decoder_step missing ${cacheName("out", i)}`);
-          caches[i] = copyF16Bits(co.data as ArrayBufferView);
+
+        // GPU-side copy cache_out -> cache_in for next iteration.
+        if (t + 1 < T) {
+          for (let i = 0; i < WAN_VAE_CACHE_SHAPES.length; i++) {
+            copyPairs[i].src = outSet[i];
+            copyPairs[i].dst = inSet[i];
+          }
+          copyGpuTensorsBatch(device, copyPairs);
         }
+
         onProgress?.(framesDone, F);
       }
     } finally {
-      await this.stepSession.release();
-      this.stepSession = null;
+      if (this.initSession) {
+        try { await this.initSession.release(); } catch { /* ignore */ }
+        this.initSession = null;
+      }
+      if (this.stepSession) {
+        try { await this.stepSession.release(); } catch { /* ignore */ }
+        this.stepSession = null;
+      }
+      for (const t of cacheA) destroyGpuTensor(t);
+      for (const t of cacheB) destroyGpuTensor(t);
+      destroyGpuTensor(gpuLatent);
+      destroyGpuTensor(gpuFramesInit);
+      destroyGpuTensor(gpuFramesStep);
     }
 
     if (framesDone !== F) {

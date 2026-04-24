@@ -85,7 +85,7 @@
         <select id="model-select"></select>
       </div>
       <small>
-        output is fixed at 480×832, 81 frames @ 16 fps, 3 DMD steps -
+        output is fixed at 480×480, 81 frames @ 16 fps, 4 UniPC steps -
         the model only supports this geometry.
       </small>
       <details id="advanced-section" style="margin-top: 8px">
@@ -103,18 +103,6 @@
               - show a verbose per-stage log (timings, token counts,
               per-step progress) under the progress bar. noisy; useful
               when something looks wrong.
-            </small>
-          </span>
-        </div>
-        <div class="field" style="margin-top: 6px">
-          <input type="checkbox" id="stop-after-block-00-check" />
-          <span style="flex: 1">
-            <label for="stop-after-block-00-check">stop after block_00</label>
-            <small>
-              - halt the run after block_00 executes at step 1 and emits
-              its hex dump. pair with debug log on and ?textwasm=1 (known-
-              good text embeds) for a webgpu-vs-cpu byte diff of block_00
-              output without waiting for the remaining 89 block iterations.
             </small>
           </span>
         </div>

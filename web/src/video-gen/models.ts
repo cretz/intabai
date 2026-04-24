@@ -14,6 +14,7 @@ import {
   fastwanAllFiles,
   type FastwanTransformerPrecision,
 } from "../fastwan/models";
+import type { FastwanResolution } from "../fastwan/transformer";
 
 export type VideoBackend = "fastwan";
 
@@ -28,6 +29,9 @@ export interface VideoModelEntry {
    *  same backend can expose multiple quant tiers without code branches in
    *  the caller. */
   transformerPrecision?: FastwanTransformerPrecision;
+  /** Output resolution. Drives the transformer/VAE asset selection and the
+   *  pipeline shape. */
+  resolution: FastwanResolution;
   /** Optional public model page. Undefined if the repo is not yet
    *  published. */
   hfRepoUrl?: string;
@@ -39,30 +43,57 @@ export interface VideoModelEntry {
 
 export const VIDEO_GEN_MODELS: VideoModelEntry[] = [
   {
-    id: "fastwan_22_ti2v_5b",
-    name: "FastWan 2.2 TI2V 5B",
+    id: "fastwan_22_ti2v_5b_480",
+    name: "FastWan 2.2 TI2V 5B (480×480)",
     description:
       "DMD-distilled, 4-step flow-matching text-to-video. " +
-      "480×832 at 16 fps, 5 second clips. q4f16 transformer + UMT5 text " +
+      "480×480 at 16 fps, 5 second clips. q4f16 transformer + UMT5 text " +
       "encoder + LightTAE VAE. ~6.5 GB total download. Desktop and mobile.",
-    files: fastwanAllFiles("q4f16"),
+    files: fastwanAllFiles("q4f16", 480),
     backend: "fastwan",
     transformerPrecision: "q4f16",
-    resolutionLabel: "480×832",
+    resolution: 480,
+    resolutionLabel: "480×480",
     clipLabel: "5 s @ 16 fps",
   },
   {
-    id: "fastwan_22_ti2v_5b_fp16",
-    name: "FastWan 2.2 TI2V 5B (fp16, desktop)",
+    id: "fastwan_22_ti2v_5b_480_fp16",
+    name: "FastWan 2.2 TI2V 5B (480×480, fp16, desktop)",
     description:
-      "Same pipeline as the q4f16 variant, but with the fp16 transformer " +
-      "blocks (no int4 dequant on every matmul). ~25% faster per step " +
-      "at the cost of ~9.4 GB more download. Desktop GPUs only - the " +
-      "per-block memory budget is too large for mobile WebGPU.",
-    files: fastwanAllFiles("fp16"),
+      "480×480 with fp16 transformer blocks (no int4 dequant on every " +
+      "matmul). ~25% faster per step at the cost of ~9.4 GB more download. " +
+      "Desktop GPUs only - per-block memory budget too large for mobile.",
+    files: fastwanAllFiles("fp16", 480),
     backend: "fastwan",
     transformerPrecision: "fp16",
-    resolutionLabel: "480×832",
+    resolution: 480,
+    resolutionLabel: "480×480",
+    clipLabel: "5 s @ 16 fps",
+  },
+  {
+    id: "fastwan_22_ti2v_5b_576",
+    name: "FastWan 2.2 TI2V 5B (576×576)",
+    description:
+      "576×576 variant. ~2x slower per step than 480×480 (attention is " +
+      "O(N²) and seq grows from 4725 to 6804). Same q4f16 quant + UMT5 + " +
+      "LightTAE. Desktop and mobile.",
+    files: fastwanAllFiles("q4f16", 576),
+    backend: "fastwan",
+    transformerPrecision: "q4f16",
+    resolution: 576,
+    resolutionLabel: "576×576",
+    clipLabel: "5 s @ 16 fps",
+  },
+  {
+    id: "fastwan_22_ti2v_5b_576_fp16",
+    name: "FastWan 2.2 TI2V 5B (576×576, fp16, desktop)",
+    description:
+      "576×576 with fp16 transformer blocks. Desktop GPUs only.",
+    files: fastwanAllFiles("fp16", 576),
+    backend: "fastwan",
+    transformerPrecision: "fp16",
+    resolution: 576,
+    resolutionLabel: "576×576",
     clipLabel: "5 s @ 16 fps",
   },
 ];

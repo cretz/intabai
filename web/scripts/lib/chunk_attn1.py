@@ -27,15 +27,16 @@ Q_NAME = "/block/attn1/Mul_24_output_0"
 KT_NAME = "/block/attn1/Mul_25_output_0"
 V_NAME = "/block/attn1/Transpose_1_output_0"
 
-SEQ_LEN = 8190
-
-
-def chunk_attn1(model: onnx.ModelProto, n_chunks: int = 3) -> onnx.ModelProto:
-    if SEQ_LEN % n_chunks != 0:
+def chunk_attn1(
+    model: onnx.ModelProto,
+    n_chunks: int,
+    seq_len: int,
+) -> onnx.ModelProto:
+    if seq_len % n_chunks != 0:
         raise ValueError(
-            f"seq_len {SEQ_LEN} not divisible by n_chunks {n_chunks}"
+            f"seq_len {seq_len} not divisible by n_chunks {n_chunks}"
         )
-    chunk = SEQ_LEN // n_chunks
+    chunk = seq_len // n_chunks
     split_sizes = [chunk] * n_chunks
 
     graph = model.graph
@@ -122,10 +123,10 @@ def chunk_attn1(model: onnx.ModelProto, n_chunks: int = 3) -> onnx.ModelProto:
     return model
 
 
-def chunk_attn1_file(path, n_chunks: int = 3) -> None:
+def chunk_attn1_file(path, n_chunks: int, seq_len: int) -> None:
     """Load, rewrite, save in place. Path is str or Path."""
     path = str(path)
     model = onnx.load(path)
-    model = chunk_attn1(model, n_chunks)
+    model = chunk_attn1(model, n_chunks, seq_len=seq_len)
     onnx.checker.check_model(model, full_check=False)
     onnx.save(model, path)

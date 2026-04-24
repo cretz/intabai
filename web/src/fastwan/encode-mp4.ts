@@ -4,7 +4,7 @@
 // decoded in memory.
 //
 // AVC level picked from coded area. keyFrame every 2s. Bitrate 5 Mbps is
-// generous for 480x832@16 but the file is only ~5s long so the absolute
+// generous for 480x480@16 but the file is only ~5s long so the absolute
 // size is small.
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";

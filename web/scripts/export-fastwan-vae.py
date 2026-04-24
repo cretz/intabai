@@ -178,10 +178,10 @@ def main():
     )
     parser.add_argument("--latent-frames", type=int, default=21,
                         help="Number of latent frames (default: 21, producing 81 output frames)")
-    parser.add_argument("--latent-height", type=int, default=30,
-                        help="Latent height (default: 30, for 480px output)")
-    parser.add_argument("--latent-width", type=int, default=52,
-                        help="Latent width (default: 52, for 832px output)")
+    parser.add_argument("--latent-height", type=int, required=True,
+                        help="Latent height (e.g. 30 for 480px, 36 for 576px)")
+    parser.add_argument("--latent-width", type=int, required=True,
+                        help="Latent width (e.g. 30 for 480px, 36 for 576px)")
     parser.add_argument("--opset", type=int, default=18)
     parser.add_argument("--log", type=Path, default=None)
     args = parser.parse_args()
