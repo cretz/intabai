@@ -6,6 +6,15 @@ In-browser text-to-video generation. Model downloads once into your
 browser (OPFS) and runs locally on WebGPU via onnxruntime-web. Nothing
 leaves your tab.
 
+## Status: experimental, known quality issues
+
+The current FastWan pipeline produces coherent but **blocky output that
+does not match the reference HF Space** at the same prompt. We can
+generate a 5-second clip end-to-end on desktop WebGPU, but the result
+is below what the model is capable of. Investigation is paused; see
+"Known issues" in the advanced section. If you want a working in-tab
+gen tool today, use [image-gen](../image-gen/) instead.
+
 ## Models
 
 [FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers](https://huggingface.co/FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers) - DMD-distilled Wan 2.2 TI2V-5B, 4 UniPC steps at flow_shift=8 (matching [KingNish/wan2-2-fast](https://huggingface.co/spaces/KingNish/wan2-2-fast)), 81 frames @ 16 fps = 5s clips. Sharded + quantized ONNX bundles will live at `cretz/FastWan2.2-TI2V-5B-ONNX` (not yet uploaded). Four bundles ship: 480×480 and 576×576, each in q4f16 (mobile + desktop, ~6.5 GB) and fp16 transformer (desktop only, ~9.4 GB extra, ~25% faster per step). Shared across all four: UMT5-XXL q4f16 text encoder + LightTAE fp16 VAE.
@@ -19,16 +28,29 @@ leaves your tab.
 - Per-layer / per-block int4 quantization keeps peak GPU residency under
   the ~4 GB browser tab budget
 - MP4 output via WebCodecs VideoEncoder + mp4-muxer
-- Progressive VAE previews after step 1 and step 2 so you see the clip
-  forming, not a blank screen for ten minutes
 - Seeded deterministic generation, persisted settings, debug log
 - ETA + per-stage progress
 
-## Problems overcome
+---
 
-Video generation in a browser tab on stock onnxruntime-web is at the
-absolute edge of what the stack supports. Most of the work was making
-that edge hold.
+## Advanced / implementation deep dive
+
+Everything below is for people debugging the pipeline or porting a
+different video model. Skip unless you want the gory bits.
+
+### Known issues
+
+- **480×480 output is blocky and topically off vs the HF Space at the
+  same prompt.** RNG mismatch (mulberry32 vs torch.randn) explains
+  "different content"; the blockiness is the open part. Sanity checks
+  on CPU ORT show the transformer and text encoder exports are
+  faithful, so the gap is on the WebGPU kernel side or in the VAE.
+  Forensics plan in `notes/worklog.md` "Current task".
+- **Text encoder q4f16 drifts ~47% vs PyTorch** by the time the 24
+  UMT5 layers compose. fp16 text encoder passes (max|diff|=0.002).
+  4-bit MatMulNBits is just too lossy for UMT5's 50k-magnitude
+  intermediates, even at `--accuracy-level 1`. Probable contributor
+  to "wrong content" but not blockiness.
 
 ### Memory and hosting
 
@@ -58,18 +80,44 @@ that edge hold.
   `Concat`. Same math, same FLOPs, fits. The chunker takes `--seq-len`
   and is auto-skipped when Q·K^T fits (true at 480×480 / seq=4725).
 
-### ORT-web kernel bugs we had to patch
+### ORT-web kernel bugs we patched and ship with
 
-- **MatMul packed kernel accumulates in fp16.** Produces 5-15% error
-  vs PyTorch on the text encoder before patching, 1-5 ULP after.
-  Patched to fp32 accumulation. Load-bearing: without this, the text
-  encoder output is wrong enough to poison the whole pipeline.
-- **Softmax kernel accumulates in fp16.** Same fix, fp32 accumulation.
 - **MatMulNBits at `accuracy_level=4` produces NaN** in shell_pre's
   small q4 MatMuls, at every token position, on WebGPU only. CPU ORT
   at both fp16 and q4 was clean. Workaround: ship shell_pre as
   unquantized fp16 (180 MB) instead of q4 (52 MB). The full patch is
   applied via patch-package on `npm install`.
+- **Conv3DNaive shader hardcoded f32** input/output types so fp16
+  Conv3D wouldn't compile. Patched to dtype-correct types. Needed
+  for the full AutoencoderKLWan VAE; currently dead code (LightTAE
+  is the shipping decoder), kept in the patch bundle anyway.
+- **AttentionScore fp32-accumulator rewrite.** Patched but unused at
+  runtime - FastWan transformer blocks decompose attention into
+  MatMul + Softmax + MatMul, never hitting the fused AttentionScore
+  kernel. Kept in the bundle for future models.
+
+### ORT-web kernel rewrites we tried and kept off
+
+The patch-package bundle includes scripts for two more fp32-accumulator
+rewrites that we evaluated and decided not to ship:
+
+- **MatMul packed kernel fp16 -> fp32 accumulator.** On the text
+  encoder this took error from 5-15% vs PyTorch down to 1-5 ULP. But
+  in a side-by-side at the end of a generation, removing it did not
+  visibly hurt output and may have helped slightly. The leading
+  hypothesis is that the rewrite itself has a subtle WGSL correctness
+  bug (vec promotion order, cast back, etc) - real f32 accumulators
+  are strictly better numerically, so improvement-from-removal points
+  at the rewrite, not at fp16 accumulation being correct.
+- **Softmax kernel fp16 -> fp32 accumulator.** Same story: removed
+  alongside MatMul, A/B was inconclusive. Left off.
+
+`web/scripts/patch-ort-matmul-fp32-acc.mjs` keeps both blocks
+commented out with restore instructions in the header. If you want
+to re-enable them, uncomment the relevant block, then from `web/`
+run `node scripts/patch-ort-matmul-fp32-acc.mjs && node
+scripts/patch-ort-conv3d-fp16.mjs && npx patch-package
+onnxruntime-web` and `rm -rf node_modules/.vite`.
 
 ### Float16Array gotcha
 
@@ -86,7 +134,7 @@ that edge hold.
 - **VAE latent denormalization was missing.** Wan 2.2's VAE expects
   `x = x * latents_std[c] + latents_mean[c]` per channel before decode.
   Without it the decoder sees normalized-space tensors it was never
-  trained on. Applied in both preview and final decode paths.
+  trained on.
 - **Flow-matching sigma was double-shifted.** The obvious formula
   `sigma = flow_shift * s / (1 + (shift-1)*s)` applies the shift a
   second time because the FastVideo scheduler has already baked it
@@ -96,10 +144,6 @@ that edge hold.
   but still missed the Space's quality. Settled on UniPC with flow
   sigmas, predict_x0, flow_prediction, bh2, solver_order=2 with
   corrector, 4 steps, flow_shift=8 (Space overrides the config's 5.0).
-- **Flow-matching sigma was double-shifted.** The obvious
-  `sigma = flow_shift * s / (1 + (shift-1)*s)` re-applies a shift
-  the FastVideo scheduler already baked into timesteps. Correct:
-  `sigma = t / 1000`.
 - **Timestep is a 2D `[B, seq_len]` tensor**, not a scalar: every
   token gets its own timestep for Wan 2.2 TI2V.
 - **Padded text-embed positions need to be JS-zero-filled.** Our
@@ -169,13 +213,6 @@ that edge hold.
   → Off, both On battery and Plugged in). That stops the L0s/L1
   power-state transitions that are the #1 source of AER corrected
   errors on the link.
-
-## Known issues
-
-- 480×480 output is coherent but blocky and topically off vs the HF
-  Space at the same prompt. RNG mismatch (mulberry32 vs torch.randn)
-  explains "different content"; the blockiness is the open part.
-  Forensics plan in `notes/worklog.md` "Current task".
 
 ## TODO
 

@@ -114,17 +114,18 @@ export class TextEncoder {
         this.files.layers[i],
         this.providers,
       );
+      const feeds: Record<string, ort.Tensor> = {
+        hidden_states: new ort.Tensor("float16", hidden, hiddenDims),
+        attention_mask: new ort.Tensor("float16", mask, maskDims),
+      };
       try {
-        const feeds: Record<string, ort.Tensor> = {
-          hidden_states: new ort.Tensor("float16", hidden, hiddenDims),
-          attention_mask: new ort.Tensor("float16", mask, maskDims),
-        };
         const results = await session.run(feeds);
         const out = pickOutput(results);
-        // Copy out before releasing the session - ORT-web's WebGPU tensor
-        // data can be backed by GPU memory that goes away on release().
         hidden = copyF16Bits(out.data as ArrayBufferView);
+        for (const k in results) (results[k] as ort.Tensor).dispose?.();
       } finally {
+        feeds.hidden_states.dispose?.();
+        feeds.attention_mask.dispose?.();
         await session.release();
       }
       if (i === 0 || i === 11 || i === UMT5_NUM_LAYERS - 1) {
@@ -142,13 +143,14 @@ export class TextEncoder {
       this.files.shellPost,
       this.providers,
     );
+    const postFeed = new ort.Tensor("float16", hidden, hiddenDims);
     try {
-      const results = await post.run({
-        hidden_states: new ort.Tensor("float16", hidden, hiddenDims),
-      });
+      const results = await post.run({ hidden_states: postFeed });
       const out = pickOutput(results);
       hidden = copyF16Bits(out.data as ArrayBufferView);
+      for (const k in results) (results[k] as ort.Tensor).dispose?.();
     } finally {
+      postFeed.dispose?.();
       await post.release();
     }
     // Diffusers WanPipeline.encode_prompt zero-fills positions beyond the

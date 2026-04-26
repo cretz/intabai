@@ -157,6 +157,9 @@ def main():
     ap.add_argument("transformer_dir", type=Path, help="Directory with block_NN.onnx files")
     ap.add_argument("--block", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--height", type=int, default=480)
+    ap.add_argument("--width", type=int, default=832)
+    ap.add_argument("--num-frames", type=int, default=81)
     args = ap.parse_args()
 
     onnx_path = args.transformer_dir / f"block_{args.block:02d}.onnx"
@@ -170,7 +173,13 @@ def main():
     wrapper, config = load_block(args.source_dir, args.block)
     print(f"  loaded in {time.time() - t0:.1f}s")
 
-    inputs = build_inputs(config, seed=args.seed)
+    inputs = build_inputs(
+        config,
+        height=args.height,
+        width=args.width,
+        num_frames=args.num_frames,
+        seed=args.seed,
+    )
     print(f"  hidden {inputs['hidden_states'].shape}  "
           f"enc {inputs['encoder_hidden_states'].shape}  "
           f"timestep_proj {inputs['timestep_proj'].shape}  "

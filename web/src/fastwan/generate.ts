@@ -43,8 +43,8 @@ import {
   FASTWAN_EMBEDDING_SCALES_FILE,
   FASTWAN_FLOW_SHIFT,
   FASTWAN_NUM_STEPS,
-  FASTWAN_TEXT_ENCODER_LAYERS,
-  FASTWAN_TEXT_ENCODER_SHELL_POST,
+  fastwanTextEncoderLayers,
+  fastwanTextEncoderShellPost,
   fastwanTransformerFiles,
   fastwanVaeFile,
   type FastwanTransformerPrecision,
@@ -127,6 +127,12 @@ export interface GenerateOptions {
    *  forward pass because ORT-web's MatMulNBits kernel dequants on every
    *  call. Text encoder + VAE precision is fixed. */
   transformerPrecision?: FastwanTransformerPrecision;
+  /** Text encoder precision. Default `q4f16` (shipping path, ~47% numeric
+   *  drift vs PyTorch but kept for compute parity with the transformer
+   *  blocks). `fp16` is opt-in via URL param for A/B testing - matches
+   *  PyTorch to cosine=1.0 but costs 9.2 GB download and empirically
+   *  slows subsequent transformer block compute ~3x on some GPUs. */
+  textEncoderPrecision?: FastwanTransformerPrecision;
   /** Output resolution. The transformer + VAE assets are exported per
    *  resolution; the selected video-gen model entry pins this. */
   resolution: FastwanResolution;
@@ -166,6 +172,8 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   const seed = opts.seed ?? Math.floor(Math.random() * 0xffffffff);
   const transformerPrecision: FastwanTransformerPrecision =
     opts.transformerPrecision ?? "q4f16";
+  const textEncoderPrecision: FastwanTransformerPrecision =
+    opts.textEncoderPrecision ?? "q4f16";
   const shape: FastwanShape = fastwanShape(opts.resolution);
   const txFiles = fastwanTransformerFiles(transformerPrecision, opts.resolution);
   const t0 = performance.now();
@@ -233,8 +241,8 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   const textEncoder = new TextEncoder(
     cache,
     {
-      layers: FASTWAN_TEXT_ENCODER_LAYERS,
-      shellPost: FASTWAN_TEXT_ENCODER_SHELL_POST,
+      layers: fastwanTextEncoderLayers(textEncoderPrecision),
+      shellPost: fastwanTextEncoderShellPost(textEncoderPrecision),
     },
     embedding,
   );

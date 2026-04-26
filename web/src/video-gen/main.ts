@@ -290,6 +290,10 @@ async function onGenerate(): Promise<void> {
       prompt,
       seed,
       transformerPrecision: model.transformerPrecision,
+      textEncoderPrecision:
+        new URLSearchParams(location.search).get("textencoderfp16") === "1"
+          ? "fp16"
+          : "q4f16",
       resolution: model.resolution,
       signal: currentAbort.signal,
       onPreview: (frames) => {

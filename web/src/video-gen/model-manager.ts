@@ -1,12 +1,8 @@
-// Minimal model-cache UI for the video-gen tool. Renders one row per
-// VideoModelEntry with download / cached / delete state and a byte
-// progress bar. Mirrors image-gen's ImageGenModelManager but simplified:
-// no recommended/fallback sections (only one model for now), and no
-// persisted model-select restoration (no select to restore).
-//
-// As we add more video backends, extend this in the same direction
-// image-gen went - promote a VIDEO_GEN_MODELS iteration into sections,
-// surface a model dropdown, track ready-state per bundle.
+// Minimal model-cache UI for the video-gen tool. Renders one compact
+// row per VideoModelEntry inside section containers, mirroring
+// image-gen/model-manager.ts. The single section today is "experimental
+// (quality issues)" since FastWan output does not yet match the HF Space
+// reference. Add new sections as more backends land.
 
 import { ModelCache, type DownloadProgress, type ModelFile } from "../shared/model-cache";
 import { VIDEO_GEN_MODELS, type VideoModelEntry } from "./models";
@@ -24,6 +20,13 @@ function totalBytes(files: ModelFile[]): number {
   return n;
 }
 
+function rowLabel(model: VideoModelEntry): string {
+  const linkedName = model.hfRepoUrl
+    ? `<a href="${model.hfRepoUrl}" target="_blank" rel="noopener noreferrer"><strong>${model.name}</strong></a>`
+    : `<strong>${model.name}</strong>`;
+  return `${linkedName} <small>${model.resolutionLabel}, ${model.clipLabel}</small>`;
+}
+
 export class VideoGenModelManager {
   readonly cache: ModelCache;
   private readonly ready = new Set<string>();
@@ -37,12 +40,10 @@ export class VideoGenModelManager {
     this.legendEl = container.closest("fieldset")?.querySelector("legend") ?? null;
   }
 
-  /** Is this model bundle fully downloaded? */
   isReady(id: string): boolean {
     return this.ready.has(id);
   }
 
-  /** Ids of every bundle that's fully cached, in registry order. */
   readyIds(): string[] {
     return VIDEO_GEN_MODELS.filter((m) => this.ready.has(m.id)).map((m) => m.id);
   }
@@ -51,14 +52,14 @@ export class VideoGenModelManager {
     this.container.innerHTML = "";
     this.ready.clear();
 
-    const header = document.createElement("small");
-    header.textContent = "all downloads stay in this browser.";
-    header.style.display = "block";
-    header.style.marginBottom = "8px";
-    this.container.appendChild(header);
+    const experimentalSection = this.createSection(
+      "experimental (quality issues)",
+      "FastWan runs end-to-end but output is blocky and topically off vs the reference HF Space. See the README's known-issues section.",
+    );
+    this.container.appendChild(experimentalSection);
 
     for (const model of VIDEO_GEN_MODELS) {
-      await this.renderModel(model);
+      await this.renderModel(model, experimentalSection);
     }
 
     const clearWrap = document.createElement("div");
@@ -86,12 +87,8 @@ export class VideoGenModelManager {
     this.onReadyChange();
   }
 
-  private async renderModel(model: VideoModelEntry): Promise<void> {
-    const cached = await this.cache.areAllCached(model.files);
-    if (cached) this.ready.add(model.id);
-
+  private createSection(title: string, description: string): HTMLDivElement {
     const wrap = document.createElement("div");
-    wrap.id = `model-${model.id}`;
     wrap.style.margin = "10px 0";
     wrap.style.padding = "6px 8px";
     wrap.style.border = "1px solid";
@@ -100,72 +97,63 @@ export class VideoGenModelManager {
     heading.style.fontSize = "12px";
     heading.style.fontWeight = "bold";
     heading.style.letterSpacing = "0.06em";
-    heading.textContent = model.name.toUpperCase();
-    if (model.hfRepoUrl) {
-      const link = document.createElement("a");
-      link.href = model.hfRepoUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = model.name;
-      heading.textContent = "";
-      heading.appendChild(link);
-    }
+    heading.style.marginBottom = "2px";
+    heading.textContent = title.toUpperCase();
     wrap.appendChild(heading);
 
-    const desc = document.createElement("small");
-    desc.style.display = "block";
-    desc.style.margin = "4px 0 6px";
-    desc.textContent = `${model.resolutionLabel}, ${model.clipLabel}. ${model.description}`;
-    wrap.appendChild(desc);
+    const help = document.createElement("small");
+    help.textContent = description;
+    help.style.display = "block";
+    help.style.marginBottom = "6px";
+    wrap.appendChild(help);
 
-    const row = document.createElement("div");
-    row.style.display = "flex";
-    row.style.alignItems = "baseline";
-    row.style.gap = "8px";
-    wrap.appendChild(row);
-
-    this.fillRow(row, model, cached);
-    this.container.appendChild(wrap);
+    return wrap;
   }
 
-  private fillRow(row: HTMLElement, model: VideoModelEntry, cached: boolean): void {
+  private async renderModel(model: VideoModelEntry, parent: HTMLElement): Promise<void> {
+    const cached = await this.cache.areAllCached(model.files);
+    if (cached) this.ready.add(model.id);
+
+    const div = document.createElement("div");
+    div.id = `model-${model.id}`;
+    this.fillRow(div, model, cached);
+    parent.appendChild(div);
+  }
+
+  private fillRow(div: HTMLElement, model: VideoModelEntry, cached: boolean): void {
     const total = formatBytes(totalBytes(model.files));
-    row.innerHTML = "";
-    const sizeLabel = document.createElement("small");
-    sizeLabel.style.flex = "1";
-    sizeLabel.textContent = `total ${total}`;
-    row.appendChild(sizeLabel);
-
+    const label = rowLabel(model);
+    div.title = model.description;
+    div.style.display = "flex";
+    div.style.alignItems = "baseline";
+    div.style.gap = "8px";
+    div.style.padding = "2px 0";
     if (cached) {
-      const cachedLabel = document.createElement("small");
-      cachedLabel.className = "cached-label";
-      cachedLabel.textContent = "cached";
-      row.appendChild(cachedLabel);
-      const del = document.createElement("button");
-      del.type = "button";
-      del.textContent = "delete";
-      del.addEventListener("click", () => this.deleteModel(model, row));
-      row.appendChild(del);
-      return;
+      div.innerHTML =
+        `<span style="flex:1">${label}</span>` +
+        `<small>${total}</small>` +
+        `<small class="cached-label">cached</small> ` +
+        `<button class="delete-btn">delete</button>`;
+      div
+        .querySelector(".delete-btn")!
+        .addEventListener("click", () => this.deleteModel(model, div));
+    } else {
+      div.innerHTML =
+        `<span style="flex:1">${label}</span>` +
+        `<small>${total}</small>` +
+        `<button class="download-btn">download</button>` +
+        `<small class="progress-text"></small>`;
+      div
+        .querySelector(".download-btn")!
+        .addEventListener("click", () => this.downloadModel(model, div));
     }
-
-    const dl = document.createElement("button");
-    dl.type = "button";
-    dl.textContent = "download";
-    const progressText = document.createElement("small");
-    progressText.className = "progress-text";
-    dl.addEventListener("click", () => this.downloadModel(model, row, dl, progressText));
-    row.appendChild(dl);
-    row.appendChild(progressText);
   }
 
-  private async downloadModel(
-    model: VideoModelEntry,
-    row: HTMLElement,
-    btn: HTMLButtonElement,
-    progressText: HTMLElement,
-  ): Promise<void> {
+  private async downloadModel(model: VideoModelEntry, div: HTMLElement): Promise<void> {
+    const btn = div.querySelector(".download-btn") as HTMLButtonElement;
+    const progressText = div.querySelector(".progress-text") as HTMLElement;
     btn.disabled = true;
+
     const total = totalBytes(model.files);
     const bytesByFile = new Map<string, number>();
     for (const f of model.files) {
@@ -180,7 +168,7 @@ export class VideoGenModelManager {
         progressText.textContent = ` ${pct}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
       });
       this.ready.add(model.id);
-      this.fillRow(row, model, true);
+      this.fillRow(div, model, true);
       this.refreshLegend();
       this.onReadyChange();
     } catch (err) {
@@ -189,10 +177,10 @@ export class VideoGenModelManager {
     }
   }
 
-  private async deleteModel(model: VideoModelEntry, row: HTMLElement): Promise<void> {
+  private async deleteModel(model: VideoModelEntry, div: HTMLElement): Promise<void> {
     await this.cache.deleteFiles(model.files);
     this.ready.delete(model.id);
-    this.fillRow(row, model, false);
+    this.fillRow(div, model, false);
     this.refreshLegend();
     this.onReadyChange();
   }

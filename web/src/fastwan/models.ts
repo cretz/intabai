@@ -1,18 +1,17 @@
 // FastWan 2.2 TI2V-5B ONNX file manifest.
 //
-// Files are served in dev via the vite proxy at `/local-models/fastwan/`
-// (see web/vite.config.ts), which maps to
-// notes/models/fastwan/hf-repo/ on disk. Swap FASTWAN_BASE to the HF repo
-// URL once we upload (target name `cretz/FastWan2.2-TI2V-5B-ONNX`, not yet
-// created - do not invent the URL, verify the repo before swapping).
+// Files are served from the published HF repo
+// (cretz/FastWan2.2-TI2V-5B-ONNX-sharded). To re-test against a local
+// export, flip FASTWAN_BASE back to `/local-models/fastwan/onnx` (served
+// by the vite dev proxy in web/vite.config.ts).
 
 import type { ModelFile } from "../shared/model-cache";
 import type { OrtModelFile } from "../sd15/ort-helpers";
 import type { FastwanResolution } from "./transformer";
 
-/** Base URL for FastWan asset fetches. Dev uses the vite proxy; flip to
- *  the HF raw URL once the repo is published. */
-const FASTWAN_BASE = "/local-models/fastwan/onnx";
+/** Base URL for FastWan asset fetches. */
+const FASTWAN_BASE =
+  "https://huggingface.co/cretz/FastWan2.2-TI2V-5B-ONNX-sharded/resolve/main/onnx";
 
 // ---- Raw ModelFile entries -------------------------------------------------
 //
@@ -75,8 +74,24 @@ export const FASTWAN_EMBEDDING_SCALES_FILE: ModelFile = mf(
   512_768,
 );
 
-function textEncoderLayerFile(i: number): OrtModelFile {
+// Text encoder ships in two precisions keyed to the transformer precision
+// selection. q4f16 has ~47% drift vs PyTorch on CPU ORT (MatMulNBits is too
+// lossy for UMT5's 50k-magnitude intermediates even at accuracy_level=1);
+// fp16 matches PyTorch to cosine=1.0. Mobile pays the drift; desktop users
+// running the fp16 transformer also get the fp16 text encoder.
+function textEncoderLayerFile(
+  i: number,
+  precision: FastwanTransformerPrecision,
+): OrtModelFile {
   const idx = String(i).padStart(2, "0");
+  if (precision === "fp16") {
+    return mf(
+      `text_layer_${idx}_fp16`,
+      `text-encoder/layer_${idx}.onnx (fp16)`,
+      `text-encoder/layer_${idx}.onnx`,
+      385_924_507,
+    );
+  }
   const graph = mf(
     `text_layer_${idx}`,
     `text-encoder-q4f16/layer_${idx}.onnx`,
@@ -92,17 +107,30 @@ function textEncoderLayerFile(i: number): OrtModelFile {
   return { graph, data, dataPath: `layer_${idx}.onnx.data` };
 }
 
-export const FASTWAN_TEXT_ENCODER_LAYERS: OrtModelFile[] = Array.from(
-  { length: 24 },
-  (_, i) => textEncoderLayerFile(i),
-);
+export function fastwanTextEncoderLayers(
+  precision: FastwanTransformerPrecision,
+): OrtModelFile[] {
+  return Array.from({ length: 24 }, (_, i) => textEncoderLayerFile(i, precision));
+}
 
-export const FASTWAN_TEXT_ENCODER_SHELL_POST: OrtModelFile = mf(
-  "text_shell_post",
-  "text-encoder-q4f16/shell_post.onnx",
-  "text-encoder-q4f16/shell_post.onnx",
-  20_000,
-);
+export function fastwanTextEncoderShellPost(
+  precision: FastwanTransformerPrecision,
+): OrtModelFile {
+  if (precision === "fp16") {
+    return mf(
+      "text_shell_post_fp16",
+      "text-encoder/shell_post.onnx (fp16)",
+      "text-encoder/shell_post.onnx",
+      20_000,
+    );
+  }
+  return mf(
+    "text_shell_post",
+    "text-encoder-q4f16/shell_post.onnx",
+    "text-encoder-q4f16/shell_post.onnx",
+    20_000,
+  );
+}
 
 // ---- Transformer ----------------------------------------------------------
 // Two precision variants ship: q4f16 (default, ~2.8 GB transformer, works on
@@ -227,16 +255,18 @@ export function fastwanAllFiles(
   resolution: FastwanResolution,
 ): ModelFile[] {
   const tx = fastwanTransformerFiles(precision, resolution);
+  const textEncoderLayers = fastwanTextEncoderLayers(precision);
+  const textEncoderShellPost = fastwanTextEncoderShellPost(precision);
   const files: ModelFile[] = [
     fastwanVaeFile(resolution),
     FASTWAN_EMBEDDING_Q8_FILE,
     FASTWAN_EMBEDDING_SCALES_FILE,
     FASTWAN_TOKENIZER_FILE,
-    ...ortModelFiles(FASTWAN_TEXT_ENCODER_SHELL_POST),
+    ...ortModelFiles(textEncoderShellPost),
     ...ortModelFiles(tx.shellPre),
     ...ortModelFiles(tx.shellPost),
   ];
-  for (const layer of FASTWAN_TEXT_ENCODER_LAYERS) files.push(...ortModelFiles(layer));
+  for (const layer of textEncoderLayers) files.push(...ortModelFiles(layer));
   for (const block of tx.blocks) files.push(...ortModelFiles(block));
   return files;
 }
