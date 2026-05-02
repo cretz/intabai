@@ -117,6 +117,13 @@ export interface ForwardInput {
   /** Optional per-tensor stats hook for diagnosing gray-output bugs.
    *  Called with intermediate fp16-bit tensors at key stages. */
   onStatsFp16?: (name: string, bits: Uint16Array) => void;
+  /** Optional per-token timestep mask for I2V conditioning. Length must
+   *  equal seqLen. Tokens where mask[i]===0 get timestep=0 (clean
+   *  conditioning), tokens where mask[i]===1 get the regular timestep.
+   *  When omitted, every token gets the same timestep (T2V path). See
+   *  Wan2.2 TI2V expand_timesteps + first_frame_mask in
+   *  diffusers WanImageToVideoPipeline. */
+  firstFrameMask?: Uint8Array;
 }
 
 /** Per-shape element counts for the well-known tensors. Used by readback
@@ -207,10 +214,22 @@ export class Transformer {
 
     // Expand scalar timestep to [1, seqLen] int64. Wan 2.2 TI2V uses
     // expand_timesteps=True: every packed token gets the same timestep.
+    // For I2V, frame-0 tokens get t=0 (clean conditioning) so the model
+    // treats those as already-decoded; the firstFrameMask drives this.
     // int64 stays on CPU; ORT routes shape/index ops to the wasm EP anyway.
+    const mask = input.firstFrameMask;
+    if (mask && mask.length !== shape.seqLen) {
+      throw new Error(
+        `firstFrameMask length ${mask.length} != seqLen ${shape.seqLen}`,
+      );
+    }
     const timestepArr = new BigInt64Array(shape.seqLen);
     const tBig = BigInt(input.timestep);
-    for (let i = 0; i < shape.seqLen; i++) timestepArr[i] = tBig;
+    if (mask) {
+      for (let i = 0; i < shape.seqLen; i++) timestepArr[i] = mask[i] ? tBig : 0n;
+    } else {
+      for (let i = 0; i < shape.seqLen; i++) timestepArr[i] = tBig;
+    }
 
     // ---- allocate GPU tensors ------------------------------------------------
     // All created fresh per forward() so the buffers are cleanly destroyed

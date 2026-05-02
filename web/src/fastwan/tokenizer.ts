@@ -31,7 +31,16 @@ let cachedTokenizer: unknown = null;
 export async function loadTokenizer(cache: ModelCache): Promise<unknown> {
   if (cachedTokenizer) return cachedTokenizer;
   const tokenizerJson = await cache.loadFileText(FASTWAN_TOKENIZER_FILE);
-  const tokJson = JSON.parse(tokenizerJson);
+  let tokJson: unknown;
+  try {
+    tokJson = JSON.parse(tokenizerJson);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `tokenizer.json parse failed (${tokenizerJson.length} chars,` +
+        ` tail=${JSON.stringify(tokenizerJson.slice(-60))}): ${msg}`,
+    );
+  }
   const transformers = await import("@huggingface/transformers");
   const anyTransformers = transformers as Record<string, unknown>;
   const TokClass =

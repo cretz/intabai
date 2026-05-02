@@ -31,17 +31,34 @@ function mf(id: string, name: string, rel: string, sizeBytes: number): ModelFile
 // Single fp16 file, no external data. Per-resolution: each resolution ships
 // its own LightTAE export at the latent geometry the transformer produces.
 
-const LIGHTTAE_FILE_BYTES: Record<FastwanResolution, number> = {
+const LIGHTTAE_DECODER_FILE_BYTES: Record<FastwanResolution, number> = {
   480: 29_549_754,
   576: 33_807_564,
 };
 
-export function fastwanVaeFile(resolution: FastwanResolution): ModelFile {
+export function fastwanVaeDecoderFile(resolution: FastwanResolution): ModelFile {
   return mf(
     `vae_decoder_${resolution}`,
     `vae_decoder-${resolution}.onnx`,
     `vae_decoder-${resolution}.onnx`,
-    LIGHTTAE_FILE_BYTES[resolution],
+    LIGHTTAE_DECODER_FILE_BYTES[resolution],
+  );
+}
+
+// ---- VAE encoder (LightTAE, used only for I2V) ----------------------------
+// Same architecture as the decoder but the smaller direction (3 MB). Two
+// per-resolution exports because input H/W are baked into the ONNX shape;
+// weights themselves are resolution-independent so both files are byte-
+// identical on disk apart from shape metadata.
+
+const LIGHTTAE_ENCODER_FILE_BYTES = 3_030_010;
+
+export function fastwanVaeEncoderFile(resolution: FastwanResolution): ModelFile {
+  return mf(
+    `vae_encoder_${resolution}`,
+    `vae_encoder-${resolution}.onnx`,
+    `vae_encoder-${resolution}.onnx`,
+    LIGHTTAE_ENCODER_FILE_BYTES,
   );
 }
 
@@ -260,7 +277,8 @@ export function fastwanAllFiles(
   const textEncoderLayers = fastwanTextEncoderLayers(precision);
   const textEncoderShellPost = fastwanTextEncoderShellPost(precision);
   const files: ModelFile[] = [
-    fastwanVaeFile(resolution),
+    fastwanVaeDecoderFile(resolution),
+    fastwanVaeEncoderFile(resolution),
     FASTWAN_EMBEDDING_Q8_FILE,
     FASTWAN_EMBEDDING_SCALES_FILE,
     FASTWAN_TOKENIZER_FILE,

@@ -46,6 +46,25 @@
     </fieldset>
 
     <fieldset>
+      <legend>input image (optional, for image-to-video)</legend>
+      <input type="file" id="image-input" accept="image/*" />
+      <button type="button" id="image-clear" style="display: none">clear</button>
+      <div id="image-preview-row" style="display: none; margin-top: 8px">
+        <span id="image-preview-wrap" style="position: relative; display: inline-block; vertical-align: middle; line-height: 0">
+          <img id="image-preview" style="max-width: 200px; max-height: 200px; display: block" />
+          <span id="image-preview-crop" style="position: absolute; box-sizing: border-box; border: 2px solid #00ff00; pointer-events: none; display: none"></span>
+        </span>
+        <small id="image-info" style="margin-left: 8px; vertical-align: middle"></small>
+      </div>
+      <small>
+        leave empty for text-to-video. otherwise, the image is
+        center-cropped to a square (largest centered square that fits)
+        and scaled to the model's resolution; it becomes the first frame
+        of the generated clip.
+      </small>
+    </fieldset>
+
+    <fieldset>
       <legend>options</legend>
       <div class="field" style="margin-bottom: 6px">
         <label for="model-select">model</label>

@@ -46,6 +46,12 @@ const persisted = new PersistedSettings<VideoGenSettings>("intabai:video-gen:set
 const modelManagerContainer = document.getElementById("model-manager") as HTMLDivElement;
 const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
 const promptInput = document.getElementById("prompt") as HTMLTextAreaElement;
+const imageInput = document.getElementById("image-input") as HTMLInputElement;
+const imageClearBtn = document.getElementById("image-clear") as HTMLButtonElement;
+const imagePreviewRow = document.getElementById("image-preview-row") as HTMLDivElement;
+const imagePreviewImg = document.getElementById("image-preview") as HTMLImageElement;
+const imagePreviewCrop = document.getElementById("image-preview-crop") as HTMLSpanElement;
+const imageInfo = document.getElementById("image-info") as HTMLElement;
 const seedInput = document.getElementById("seed-input") as HTMLInputElement;
 const debugLogCheck = document.getElementById("debug-log-check") as HTMLInputElement;
 const advancedSection = document.getElementById("advanced-section") as HTMLDetailsElement;
@@ -137,6 +143,71 @@ function updateGenerateButton(): void {
   const hasPrompt = promptInput.value.trim().length > 0;
   generateBtn.disabled = !(ready && hasPrompt);
 }
+
+// ---- Input image (optional, for I2V) --------------------------------------
+//
+// Held in memory as an ImageBitmap; not persisted (files don't survive
+// reload anyway). Cleared between runs only if the user explicitly
+// clears or replaces it.
+
+let inputImageBitmap: ImageBitmap | null = null;
+let inputImagePreviewUrl: string | null = null;
+
+function clearInputImage(): void {
+  inputImageBitmap?.close();
+  inputImageBitmap = null;
+  if (inputImagePreviewUrl) {
+    URL.revokeObjectURL(inputImagePreviewUrl);
+    inputImagePreviewUrl = null;
+  }
+  imagePreviewRow.style.display = "none";
+  imagePreviewCrop.style.display = "none";
+  imagePreviewImg.removeAttribute("src");
+  imageInfo.textContent = "";
+  imageInput.value = "";
+  imageClearBtn.style.display = "none";
+}
+
+async function onImageSelected(file: File): Promise<void> {
+  // Decode synchronously here so we surface unsupported formats
+  // immediately instead of at generate time.
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch (err) {
+    console.error("[video-gen] failed to decode image", err);
+    imageInfo.textContent = `failed to decode: ${(err as Error).message}`;
+    imagePreviewRow.style.display = "";
+    return;
+  }
+  inputImageBitmap?.close();
+  inputImageBitmap = bitmap;
+  if (inputImagePreviewUrl) URL.revokeObjectURL(inputImagePreviewUrl);
+  inputImagePreviewUrl = URL.createObjectURL(file);
+  imagePreviewImg.src = inputImagePreviewUrl;
+  imageInfo.textContent = `${bitmap.width}×${bitmap.height} (green box = center crop)`;
+  imagePreviewRow.style.display = "";
+  imageClearBtn.style.display = "";
+  const positionCrop = (): void => {
+    const w = imagePreviewImg.clientWidth;
+    const h = imagePreviewImg.clientHeight;
+    if (!w || !h) return;
+    const side = Math.min(w, h);
+    imagePreviewCrop.style.width = `${side}px`;
+    imagePreviewCrop.style.height = `${side}px`;
+    imagePreviewCrop.style.left = `${(w - side) / 2}px`;
+    imagePreviewCrop.style.top = `${(h - side) / 2}px`;
+    imagePreviewCrop.style.display = "";
+  };
+  if (imagePreviewImg.complete) positionCrop();
+  else imagePreviewImg.addEventListener("load", positionCrop, { once: true });
+}
+
+imageInput.addEventListener("change", () => {
+  const file = imageInput.files?.[0];
+  if (file) void onImageSelected(file);
+});
+imageClearBtn.addEventListener("click", clearInputImage);
 
 promptInput.addEventListener("input", () => {
   updateGenerateButton();
@@ -296,6 +367,7 @@ async function onGenerate(): Promise<void> {
       // always cache-miss.
       textEncoderPrecision: model.transformerPrecision,
       resolution: model.resolution,
+      inputImage: inputImageBitmap ?? undefined,
       signal: currentAbort.signal,
       onPreview: (frames) => {
         previewSection.style.display = "";
@@ -326,8 +398,13 @@ async function onGenerate(): Promise<void> {
       pv.setStatus("cancelled");
     } else {
       const msg = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error && err.stack ? err.stack : "";
       console.error("[video-gen]", err);
       pv.setStatus(`failed: ${msg}`);
+      if (onDebug) {
+        onDebug(`ERROR: ${msg}`);
+        if (stack) onDebug(stack);
+      }
     }
   } finally {
     cancelBtn.style.display = "none";

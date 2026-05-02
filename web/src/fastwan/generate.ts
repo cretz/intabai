@@ -37,7 +37,12 @@ import {
   type FastwanResolution,
   type FastwanShape,
 } from "./transformer";
-import { VaeDecoder, LIGHTTAE_OUT_FRAMES } from "./vae";
+import { VaeDecoder, LIGHTTAE_OUT_FRAMES } from "./vae-decoder";
+import {
+  VaeEncoder,
+  VAE_ENCODER_INPUT_FRAMES,
+  VAE_ENCODER_OUTPUT_LATENT_FRAMES,
+} from "./vae-encoder";
 import {
   FASTWAN_EMBEDDING_Q8_FILE,
   FASTWAN_EMBEDDING_SCALES_FILE,
@@ -46,7 +51,8 @@ import {
   fastwanTextEncoderLayers,
   fastwanTextEncoderShellPost,
   fastwanTransformerFiles,
-  fastwanVaeFile,
+  fastwanVaeDecoderFile,
+  fastwanVaeEncoderFile,
   type FastwanTransformerPrecision,
 } from "./models";
 import { UniPCFlowScheduler } from "./unipc-scheduler";
@@ -110,6 +116,111 @@ function denormalizeLatent(
   return out;
 }
 
+/** Per-channel normalize a single-frame raw latent from the VAE encoder
+ *  into the transformer's normalized space. Input layout is NTCHW with
+ *  T_lat=1, so memory is `[C, H, W]` once the leading 1s are dropped.
+ *  Inverse of denormalizeLatent: norm = (raw - mean) / std. */
+function normalizeFrame0Latent(
+  raw: Float32Array,
+  C: number,
+  H: number,
+  W: number,
+): Float32Array {
+  const plane = H * W;
+  if (raw.length !== C * plane) {
+    throw new Error(`normalizeFrame0Latent: expected ${C * plane}, got ${raw.length}`);
+  }
+  const out = new Float32Array(raw.length);
+  for (let c = 0; c < C; c++) {
+    const mean = VAE_LATENTS_MEAN[c];
+    const std = VAE_LATENTS_STD[c];
+    const base = c * plane;
+    for (let i = 0; i < plane; i++) {
+      out[base + i] = (raw[base + i] - mean) / std;
+    }
+  }
+  return out;
+}
+
+/** In-place splice the frame-0 plane of a NCTHW latent buffer with a
+ *  per-channel-flat conditioning frame. `latent` is `[1, C, T, H, W]`
+ *  fp32 NCTHW, `condition` is `[C, H, W]` fp32 (single frame). */
+function spliceLatentFrame0(
+  latent: Float32Array,
+  condition: Float32Array,
+  C: number,
+  T: number,
+  H: number,
+  W: number,
+): void {
+  const plane = H * W;
+  for (let c = 0; c < C; c++) {
+    const dst = c * T * plane; // (c, t=0)
+    const src = c * plane;
+    for (let i = 0; i < plane; i++) latent[dst + i] = condition[src + i];
+  }
+}
+
+/** Per-token first-frame mask for Wan 2.2 TI2V expand_timesteps. The
+ *  packed token order from the transformer's flatten(2) over the
+ *  patch grid is row-major [F, patchH, patchW] — frame-0 tokens are
+ *  the first `patchH * patchW` entries. */
+function buildFirstFrameMask(seqLen: number, patchH: number, patchW: number): Uint8Array {
+  const mask = new Uint8Array(seqLen);
+  const frame0 = patchH * patchW;
+  for (let i = frame0; i < seqLen; i++) mask[i] = 1;
+  return mask;
+}
+
+/** Center-crop a source bitmap to a square, scale to (size x size), and
+ *  return channel-first RGB in [0,1] as fp16 bits, packed `[3, size,
+ *  size]` (ready to be repeated T times for the encoder). */
+function bitmapToFp16Square(
+  bitmap: ImageBitmap | HTMLCanvasElement | OffscreenCanvas,
+  size: number,
+): Uint16Array {
+  const sw = "width" in bitmap ? bitmap.width : (bitmap as ImageBitmap).width;
+  const sh = "height" in bitmap ? bitmap.height : (bitmap as ImageBitmap).height;
+  const side = Math.min(sw, sh);
+  const sx = Math.floor((sw - side) / 2);
+  const sy = Math.floor((sh - side) / 2);
+
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("OffscreenCanvas 2d context not available");
+  ctx.drawImage(bitmap as CanvasImageSource, sx, sy, side, side, 0, 0, size, size);
+  const imageData = ctx.getImageData(0, 0, size, size);
+  const rgba = imageData.data;
+
+  // Channel-first RGB[0,1] fp32 then to fp16 bits.
+  const plane = size * size;
+  const fp32 = new Float32Array(3 * plane);
+  for (let i = 0; i < plane; i++) {
+    fp32[i] = rgba[i * 4] / 255;             // R
+    fp32[plane + i] = rgba[i * 4 + 1] / 255; // G
+    fp32[2 * plane + i] = rgba[i * 4 + 2] / 255; // B
+  }
+  return f32ToF16Array(fp32);
+}
+
+/** Build the [1, T_in=4, 3, H, W] fp16 input the LightTAE encoder
+ *  expects. T_in is padded to a multiple of 4 by repeating the same
+ *  frame, matching the reference encode_video last-frame-repeat pad. */
+function buildEncoderInputFromImage(
+  bitmap: ImageBitmap,
+  size: number,
+): Uint16Array {
+  const oneFrame = bitmapToFp16Square(bitmap, size);
+  if (oneFrame.length !== 3 * size * size) {
+    throw new Error(`bitmapToFp16Square produced ${oneFrame.length}, expected ${3 * size * size}`);
+  }
+  const out = new Uint16Array(VAE_ENCODER_INPUT_FRAMES * oneFrame.length);
+  for (let t = 0; t < VAE_ENCODER_INPUT_FRAMES; t++) {
+    out.set(oneFrame, t * oneFrame.length);
+  }
+  return out;
+}
+
 export interface ProgressInfo {
   /** 0..1 overall progress. */
   pct: number;
@@ -146,6 +257,13 @@ export interface GenerateOptions {
    *  delivered here. Adds ~2-3 s per step to the run, huge UX win on
    *  13-minute generations. `stepIndex` is 0-based. */
   onPreview?: (frames: ImageBitmap[], stepIndex: number) => void;
+  /** Optional input image for I2V conditioning. The image is
+   *  center-cropped to a square (largest centered square that fits)
+   *  then scaled to the model's resolution. The encoded single-frame
+   *  latent is pinned as frame 0 of the video; frame-0 transformer
+   *  tokens get timestep=0 so the model treats it as already-decoded
+   *  conditioning. When omitted, the run is pure T2V. */
+  inputImage?: ImageBitmap;
 }
 
 export interface GenerateResult {
@@ -304,8 +422,61 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   // VAE is used for optional per-step previews and the final decode. Load
   // once and reuse across all decodes to avoid the ~250 ms load cost
   // repeated 3x.
-  const vae = new VaeDecoder(cache, fastwanVaeFile(opts.resolution), shape);
-  await vae.load();
+  const vaeDecoder = new VaeDecoder(cache, fastwanVaeDecoderFile(opts.resolution), shape);
+  await vaeDecoder.load();
+
+  // ---- 4b. I2V conditioning (optional) -------------------------------------
+  // If the user passed an input image, encode it once now and prepare the
+  // frame-0 mask + normalized condition we'll splice into latents each
+  // step. Done before the denoise loop so the encoder session is gone
+  // before the transformer's GPU memory ramp.
+  let frame0Cond: Float32Array | null = null;
+  let firstFrameMask: Uint8Array | null = null;
+  if (opts.inputImage) {
+    log(
+      `i2v: encoding input image ${opts.inputImage.width}x${opts.inputImage.height} ` +
+        `(center-cropped to ${shape.pixelW}x${shape.pixelH})`,
+    );
+    const encStart = performance.now();
+    const encInputFp16 = buildEncoderInputFromImage(opts.inputImage, shape.pixelH);
+    const vaeEncoder = new VaeEncoder(
+      cache,
+      fastwanVaeEncoderFile(opts.resolution),
+      shape,
+    );
+    try {
+      await vaeEncoder.load();
+      const condRawBits = await vaeEncoder.encode(encInputFp16);
+      // Encoder output is [1, T_lat=1, 48, latentH, latentW] NTCHW. With
+      // T_lat=1 the in-memory layout is contiguous over [C, H, W].
+      const expectedRaw =
+        VAE_ENCODER_OUTPUT_LATENT_FRAMES *
+        FASTWAN_LATENT_CHANNELS *
+        shape.latentH *
+        shape.latentW;
+      if (condRawBits.length !== expectedRaw) {
+        throw new Error(
+          `vae encoder output length ${condRawBits.length} != expected ${expectedRaw}`,
+        );
+      }
+      const condRawFp32 = f16ToF32Array(condRawBits);
+      statsFp32("i2v.cond_raw", condRawFp32);
+      frame0Cond = normalizeFrame0Latent(
+        condRawFp32,
+        FASTWAN_LATENT_CHANNELS,
+        shape.latentH,
+        shape.latentW,
+      );
+      statsFp32("i2v.cond_normalized", frame0Cond);
+    } finally {
+      await vaeEncoder.release();
+    }
+    firstFrameMask = buildFirstFrameMask(shape.seqLen, shape.patchH, shape.patchW);
+    log(
+      `i2v: encoder done in ${(performance.now() - encStart).toFixed(0)} ms, ` +
+        `mask ${shape.patchH * shape.patchW}/${shape.seqLen} tokens pinned to frame 0`,
+    );
+  }
 
   const decodeLatentToBitmaps = async (src: Float32Array): Promise<ImageBitmap[]> => {
     const denormalized = denormalizeLatent(
@@ -323,7 +494,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       shape.latentW,
     );
     const inputFp16 = f32ToF16Array(transposedPre);
-    const framesBits = await vae.decode(inputFp16);
+    const framesBits = await vaeDecoder.decode(inputFp16);
     return framesToBitmaps(
       framesBits,
       LIGHTTAE_OUT_FRAMES,
@@ -361,7 +532,24 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
         `step ${step + 1}/${FASTWAN_NUM_STEPS} starting, timestep=${timestep} ` +
           `sigma=${sigmaCur.toFixed(4)}`,
       );
-      const latentFp16 = f32ToF16Array(latentFp32);
+      // I2V: splice the conditioning latent into frame 0 of the input that
+      // the transformer sees. We don't mutate `latentFp32` itself - the
+      // scheduler keeps stepping the persistent buffer; the splice is per
+      // forward pass. Matches diffusers WanImageToVideoPipeline:
+      //   latent_model_input = (1 - mask) * cond + mask * latents
+      let latentInputFp32 = latentFp32;
+      if (frame0Cond) {
+        latentInputFp32 = new Float32Array(latentFp32);
+        spliceLatentFrame0(
+          latentInputFp32,
+          frame0Cond,
+          FASTWAN_LATENT_CHANNELS,
+          FASTWAN_LATENT_FRAMES,
+          shape.latentH,
+          shape.latentW,
+        );
+      }
+      const latentFp16 = f32ToF16Array(latentInputFp32);
 
       const noisePredFp16 = await transformer.forward(
         {
@@ -371,6 +559,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
           stepIndex: step,
           onDebug,
           onStatsFp16: statsFp16Bits,
+          firstFrameMask: firstFrameMask ?? undefined,
         },
         (sIdx, bDone, bTotal) => {
           const withinStep = bDone / bTotal;
@@ -429,6 +618,21 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   }
 
   // ---- 6. Final VAE decode -----------------------------------------------
+  // I2V: pin frame 0 to the clean conditioning latent one last time
+  // before decoding. Matches the diffusers WanImageToVideoPipeline tail:
+  //   latents = (1 - mask) * cond + mask * latents
+  // The scheduler has been free to drift frame 0 during sampling; this
+  // forces the decoded first frame to actually look like the input image.
+  if (frame0Cond) {
+    spliceLatentFrame0(
+      latentFp32,
+      frame0Cond,
+      FASTWAN_LATENT_CHANNELS,
+      FASTWAN_LATENT_FRAMES,
+      shape.latentH,
+      shape.latentW,
+    );
+  }
   progress(txBase + W_DENOISE, "vae", "decoding frames");
   let framesFp16Bits: Uint16Array;
   const vaeStart = performance.now();
@@ -450,9 +654,9 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
       shape.latentH,
       shape.latentW,
     );
-    framesFp16Bits = await vae.decode(f32ToF16Array(transposed));
+    framesFp16Bits = await vaeDecoder.decode(f32ToF16Array(transposed));
   } finally {
-    await vae.release();
+    await vaeDecoder.release();
   }
   log(`VAE decode in ${(performance.now() - vaeStart).toFixed(0)} ms`);
   statsFp16Bits("vae_out_frames", framesFp16Bits);
