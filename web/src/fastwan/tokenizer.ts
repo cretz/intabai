@@ -43,8 +43,7 @@ export async function loadTokenizer(cache: ModelCache): Promise<unknown> {
   }
   const transformers = await import("@huggingface/transformers");
   const anyTransformers = transformers as Record<string, unknown>;
-  const TokClass =
-    anyTransformers["T5Tokenizer"] ?? anyTransformers["PreTrainedTokenizer"];
+  const TokClass = anyTransformers["T5Tokenizer"] ?? anyTransformers["PreTrainedTokenizer"];
   if (!TokClass || typeof TokClass !== "function") {
     throw new Error("transformers.js does not export T5Tokenizer/PreTrainedTokenizer");
   }

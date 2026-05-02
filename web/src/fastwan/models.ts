@@ -96,10 +96,7 @@ export const FASTWAN_EMBEDDING_SCALES_FILE: ModelFile = mf(
 // lossy for UMT5's 50k-magnitude intermediates even at accuracy_level=1);
 // fp16 matches PyTorch to cosine=1.0. Mobile pays the drift; desktop users
 // running the fp16 transformer also get the fp16 text encoder.
-function textEncoderLayerFile(
-  i: number,
-  precision: FastwanTransformerPrecision,
-): OrtModelFile {
+function textEncoderLayerFile(i: number, precision: FastwanTransformerPrecision): OrtModelFile {
   const idx = String(i).padStart(2, "0");
   if (precision === "fp16") {
     return mf(
@@ -124,15 +121,11 @@ function textEncoderLayerFile(
   return { graph, data, dataPath: `layer_${idx}.onnx.data` };
 }
 
-export function fastwanTextEncoderLayers(
-  precision: FastwanTransformerPrecision,
-): OrtModelFile[] {
+export function fastwanTextEncoderLayers(precision: FastwanTransformerPrecision): OrtModelFile[] {
   return Array.from({ length: 24 }, (_, i) => textEncoderLayerFile(i, precision));
 }
 
-export function fastwanTextEncoderShellPost(
-  precision: FastwanTransformerPrecision,
-): OrtModelFile {
+export function fastwanTextEncoderShellPost(precision: FastwanTransformerPrecision): OrtModelFile {
   if (precision === "fp16") {
     return mf(
       "text_shell_post_fp16",
@@ -206,9 +199,7 @@ function transformerBlocks(
   precision: FastwanTransformerPrecision,
   resolution: FastwanResolution,
 ): OrtModelFile[] {
-  return Array.from({ length: 30 }, (_, i) =>
-    transformerBlockFile(i, precision, resolution),
-  );
+  return Array.from({ length: 30 }, (_, i) => transformerBlockFile(i, precision, resolution));
 }
 
 function transformerShellPost(

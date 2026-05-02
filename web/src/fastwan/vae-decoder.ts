@@ -63,11 +63,13 @@ export class VaeDecoder {
   async decode(latents: Uint16Array): Promise<Uint16Array> {
     if (!this.session) throw new Error("VaeDecoder.load() must be called first");
     const feeds: Record<string, ort.Tensor> = {
-      latents: new ort.Tensor(
-        "float16",
-        latents,
-        [1, LIGHTTAE_LATENT_T, LIGHTTAE_LATENT_C, this.shape.latentH, this.shape.latentW],
-      ),
+      latents: new ort.Tensor("float16", latents, [
+        1,
+        LIGHTTAE_LATENT_T,
+        LIGHTTAE_LATENT_C,
+        this.shape.latentH,
+        this.shape.latentW,
+      ]),
     };
     const results = await this.session.run(feeds);
     const key = "frames" in results ? "frames" : Object.keys(results)[0];
@@ -233,10 +235,7 @@ export class WanVaeDecoder {
 
     // Pre-create the init session so ORT has materialized its WebGPU device
     // before we try to allocate GPU buffers.
-    this.initSession = await createSession(this.cache, this.initFile, [
-      "webgpu",
-      "wasm",
-    ]);
+    this.initSession = await createSession(this.cache, this.initFile, ["webgpu", "wasm"]);
     const device = getOrtGpuDevice();
     if (!device) {
       throw new Error(
@@ -259,26 +258,14 @@ export class WanVaeDecoder {
     // Latent-per-frame input: [1, C, 1, H, W] fp16. Reused across init +
     // every step; we re-upload per frame with writeGpuBytes.
     const latentFrameDims = [1, C, 1, H, W] as const;
-    const gpuLatent = createGpuTensor(
-      device,
-      "float16",
-      Array.from(latentFrameDims),
-    );
+    const gpuLatent = createGpuTensor(device, "float16", Array.from(latentFrameDims));
 
     // Frames output buffers. Init emits 1 frame, step emits 4 frames;
     // allocate separate fixed-shape buffers so we don't reallocate.
     const initFramesDims = [1, 3, 1, outH, outW] as const;
     const stepFramesDims = [1, 3, 4, outH, outW] as const;
-    const gpuFramesInit = createGpuTensor(
-      device,
-      "float16",
-      Array.from(initFramesDims),
-    );
-    const gpuFramesStep = createGpuTensor(
-      device,
-      "float16",
-      Array.from(stepFramesDims),
-    );
+    const gpuFramesInit = createGpuTensor(device, "float16", Array.from(initFramesDims));
+    const gpuFramesStep = createGpuTensor(device, "float16", Array.from(stepFramesDims));
 
     const initFrameCount = 1 * 3 * 1 * outH * outW;
     const stepFrameCount = 1 * 3 * 4 * outH * outW;
@@ -297,11 +284,7 @@ export class WanVaeDecoder {
           fetches[cacheName("out", i)] = cacheA[i];
         }
         await this.initSession.run(feeds, fetches);
-        const framesBits = await readGpuFp16(
-          device,
-          gpuFramesInit,
-          initFrameCount,
-        );
+        const framesBits = await readGpuFp16(device, gpuFramesInit, initFrameCount);
         writeFramesTransposed(out, framesBits, 1, 0, outH, outW);
         framesDone = 1;
         onProgress?.(framesDone, F);
@@ -313,10 +296,7 @@ export class WanVaeDecoder {
       this.initSession = null;
 
       // ---- step: frames 1..20 (4 frames each) -----------------------------
-      this.stepSession = await createSession(this.cache, this.stepFile, [
-        "webgpu",
-        "wasm",
-      ]);
+      this.stepSession = await createSession(this.cache, this.stepFile, ["webgpu", "wasm"]);
 
       // Ping-pong: on iteration t we feed `inSet` as cache_in and receive
       // into `outSet` as cache_out, then copy outSet -> inSet on GPU and
@@ -347,11 +327,7 @@ export class WanVaeDecoder {
         }
         await this.stepSession.run(feeds, fetches);
 
-        const framesBits = await readGpuFp16(
-          device,
-          gpuFramesStep,
-          stepFrameCount,
-        );
+        const framesBits = await readGpuFp16(device, gpuFramesStep, stepFrameCount);
         writeFramesTransposed(out, framesBits, 4, framesDone, outH, outW);
         framesDone += 4;
 
@@ -368,11 +344,19 @@ export class WanVaeDecoder {
       }
     } finally {
       if (this.initSession) {
-        try { await this.initSession.release(); } catch { /* ignore */ }
+        try {
+          await this.initSession.release();
+        } catch {
+          /* ignore */
+        }
         this.initSession = null;
       }
       if (this.stepSession) {
-        try { await this.stepSession.release(); } catch { /* ignore */ }
+        try {
+          await this.stepSession.release();
+        } catch {
+          /* ignore */
+        }
         this.stepSession = null;
       }
       for (const t of cacheA) destroyGpuTensor(t);

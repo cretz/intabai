@@ -12,10 +12,7 @@ import { PersistedSettings } from "../shared/persisted-settings";
 import { ProgressVideo } from "../shared/progress-video";
 import { VideoGenModelManager } from "./model-manager";
 import { VIDEO_GEN_MODELS } from "./models";
-import {
-  generateFastwan,
-  type ProgressInfo,
-} from "../fastwan/generate";
+import { generateFastwan, type ProgressInfo } from "../fastwan/generate";
 import { encodeFramesToMp4 } from "../fastwan/encode-mp4";
 
 interface VideoGenSettings {
@@ -262,11 +259,7 @@ function renderPreview(frames: ImageBitmap[], fps: number): void {
 /** Track the current result blob URL so we can revoke it on re-run. */
 let currentResultUrl: string | null = null;
 
-async function renderFinalResult(
-  frames: ImageBitmap[],
-  fps: number,
-  seed: number,
-): Promise<void> {
+async function renderFinalResult(frames: ImageBitmap[], fps: number, seed: number): Promise<void> {
   stopPreview();
   previewSection.style.display = "none";
 

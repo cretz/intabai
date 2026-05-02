@@ -69,20 +69,17 @@ export const FASTWAN_OUTPUT_FPS = 16;
  *  Formula (from vae_tiny.py:199-202, after collapsing a double-inverse):
  *      raw[c, t, h, w] = normalized[c, t, h, w] * std[c] + mean[c]. */
 const VAE_LATENTS_MEAN: readonly number[] = [
-  -0.2289, -0.0052, -0.1323, -0.2339, -0.2799, 0.0174, 0.1838, 0.1557,
-  -0.1382, 0.0542, 0.2813, 0.0891, 0.157, -0.0098, 0.0375, -0.1825,
-  -0.2246, -0.1207, -0.0698, 0.5109, 0.2665, -0.2108, -0.2158, 0.2502,
-  -0.2055, -0.0322, 0.1109, 0.1567, -0.0729, 0.0899, -0.2799, -0.123,
-  -0.0313, -0.1649, 0.0117, 0.0723, -0.2839, -0.2083, -0.052, 0.3748,
-  0.0152, 0.1957, 0.1433, -0.2944, 0.3573, -0.0548, -0.1681, -0.0667,
+  -0.2289, -0.0052, -0.1323, -0.2339, -0.2799, 0.0174, 0.1838, 0.1557, -0.1382, 0.0542, 0.2813,
+  0.0891, 0.157, -0.0098, 0.0375, -0.1825, -0.2246, -0.1207, -0.0698, 0.5109, 0.2665, -0.2108,
+  -0.2158, 0.2502, -0.2055, -0.0322, 0.1109, 0.1567, -0.0729, 0.0899, -0.2799, -0.123, -0.0313,
+  -0.1649, 0.0117, 0.0723, -0.2839, -0.2083, -0.052, 0.3748, 0.0152, 0.1957, 0.1433, -0.2944,
+  0.3573, -0.0548, -0.1681, -0.0667,
 ];
 const VAE_LATENTS_STD: readonly number[] = [
-  0.4765, 1.0364, 0.4514, 1.1677, 0.5313, 0.499, 0.4818, 0.5013,
-  0.8158, 1.0344, 0.5894, 1.0901, 0.6885, 0.6165, 0.8454, 0.4978,
-  0.5759, 0.3523, 0.7135, 0.6804, 0.5833, 1.4146, 0.8986, 0.5659,
-  0.7069, 0.5338, 0.4889, 0.4917, 0.4069, 0.4999, 0.6866, 0.4093,
-  0.5709, 0.6065, 0.6415, 0.4944, 0.5726, 1.2042, 0.5458, 1.6887,
-  0.3971, 1.06, 0.3943, 0.5537, 0.5444, 0.4089, 0.7468, 0.7744,
+  0.4765, 1.0364, 0.4514, 1.1677, 0.5313, 0.499, 0.4818, 0.5013, 0.8158, 1.0344, 0.5894, 1.0901,
+  0.6885, 0.6165, 0.8454, 0.4978, 0.5759, 0.3523, 0.7135, 0.6804, 0.5833, 1.4146, 0.8986, 0.5659,
+  0.7069, 0.5338, 0.4889, 0.4917, 0.4069, 0.4999, 0.6866, 0.4093, 0.5709, 0.6065, 0.6415, 0.4944,
+  0.5726, 1.2042, 0.5458, 1.6887, 0.3971, 1.06, 0.3943, 0.5537, 0.5444, 0.4089, 0.7468, 0.7744,
 ];
 
 /** Apply per-channel denormalization on a [C, T, H, W] fp32 latent.
@@ -120,12 +117,7 @@ function denormalizeLatent(
  *  into the transformer's normalized space. Input layout is NTCHW with
  *  T_lat=1, so memory is `[C, H, W]` once the leading 1s are dropped.
  *  Inverse of denormalizeLatent: norm = (raw - mean) / std. */
-function normalizeFrame0Latent(
-  raw: Float32Array,
-  C: number,
-  H: number,
-  W: number,
-): Float32Array {
+function normalizeFrame0Latent(raw: Float32Array, C: number, H: number, W: number): Float32Array {
   const plane = H * W;
   if (raw.length !== C * plane) {
     throw new Error(`normalizeFrame0Latent: expected ${C * plane}, got ${raw.length}`);
@@ -196,7 +188,7 @@ function bitmapToFp16Square(
   const plane = size * size;
   const fp32 = new Float32Array(3 * plane);
   for (let i = 0; i < plane; i++) {
-    fp32[i] = rgba[i * 4] / 255;             // R
+    fp32[i] = rgba[i * 4] / 255; // R
     fp32[plane + i] = rgba[i * 4 + 1] / 255; // G
     fp32[2 * plane + i] = rgba[i * 4 + 2] / 255; // B
   }
@@ -206,10 +198,7 @@ function bitmapToFp16Square(
 /** Build the [1, T_in=4, 3, H, W] fp16 input the LightTAE encoder
  *  expects. T_in is padded to a multiple of 4 by repeating the same
  *  frame, matching the reference encode_video last-frame-repeat pad. */
-function buildEncoderInputFromImage(
-  bitmap: ImageBitmap,
-  size: number,
-): Uint16Array {
+function buildEncoderInputFromImage(bitmap: ImageBitmap, size: number): Uint16Array {
   const oneFrame = bitmapToFp16Square(bitmap, size);
   if (oneFrame.length !== 3 * size * size) {
     throw new Error(`bitmapToFp16Square produced ${oneFrame.length}, expected ${3 * size * size}`);
@@ -288,10 +277,8 @@ function throwIfAborted(signal?: AbortSignal): void {
 export async function generateFastwan(opts: GenerateOptions): Promise<GenerateResult> {
   const { cache, prompt, signal, onProgress, onDebug } = opts;
   const seed = opts.seed ?? Math.floor(Math.random() * 0xffffffff);
-  const transformerPrecision: FastwanTransformerPrecision =
-    opts.transformerPrecision ?? "q4f16";
-  const textEncoderPrecision: FastwanTransformerPrecision =
-    opts.textEncoderPrecision ?? "q4f16";
+  const transformerPrecision: FastwanTransformerPrecision = opts.transformerPrecision ?? "q4f16";
+  const textEncoderPrecision: FastwanTransformerPrecision = opts.textEncoderPrecision ?? "q4f16";
   const shape: FastwanShape = fastwanShape(opts.resolution);
   const txFiles = fastwanTransformerFiles(transformerPrecision, opts.resolution);
   const t0 = performance.now();
@@ -300,17 +287,26 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     const ms = (performance.now() - t0).toFixed(0).padStart(6, " ");
     onDebug(`[+${ms}ms] ${msg}`);
   };
-  log(`seed=${seed} prompt=${JSON.stringify(prompt.slice(0, 80))}${prompt.length > 80 ? "..." : ""}`);
+  log(
+    `seed=${seed} prompt=${JSON.stringify(prompt.slice(0, 80))}${prompt.length > 80 ? "..." : ""}`,
+  );
 
   // Sanity stats for intermediate tensors - surfaces NaN/range issues
   // without needing to run the full 10-minute pipeline blind. Only
   // computed when the debug log is enabled.
   const statsFp32 = (name: string, arr: Float32Array): void => {
     if (!onDebug) return;
-    let mn = Infinity, mx = -Infinity, sum = 0, nan = 0, zero = 0;
+    let mn = Infinity,
+      mx = -Infinity,
+      sum = 0,
+      nan = 0,
+      zero = 0;
     for (let i = 0; i < arr.length; i++) {
       const v = arr[i];
-      if (Number.isNaN(v)) { nan++; continue; }
+      if (Number.isNaN(v)) {
+        nan++;
+        continue;
+      }
       if (v < mn) mn = v;
       if (v > mx) mx = v;
       sum += v;
@@ -384,18 +380,11 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   // Also stat just the real-token slice; the padded region should differ
   // substantially (masked attention means those positions carry less
   // information from the prompt).
-  statsFp16Bits(
-    `text_embeds[valid:0..${validLength}]`,
-    textEmbeds.subarray(0, validLength * 4096),
-  );
+  statsFp16Bits(`text_embeds[valid:0..${validLength}]`, textEmbeds.subarray(0, validLength * 4096));
 
   // ---- 4. Noise init -------------------------------------------------------
   // Latent [1, 48, 21, latentH, latentW].
-  const latentLen =
-    FASTWAN_LATENT_CHANNELS *
-    FASTWAN_LATENT_FRAMES *
-    shape.latentH *
-    shape.latentW;
+  const latentLen = FASTWAN_LATENT_CHANNELS * FASTWAN_LATENT_FRAMES * shape.latentH * shape.latentW;
   const rand = mulberry32(seed);
   let latentFp32 = gaussianNoise(latentLen, rand);
   statsFp32("noise_init", latentFp32);
@@ -439,21 +428,14 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     );
     const encStart = performance.now();
     const encInputFp16 = buildEncoderInputFromImage(opts.inputImage, shape.pixelH);
-    const vaeEncoder = new VaeEncoder(
-      cache,
-      fastwanVaeEncoderFile(opts.resolution),
-      shape,
-    );
+    const vaeEncoder = new VaeEncoder(cache, fastwanVaeEncoderFile(opts.resolution), shape);
     try {
       await vaeEncoder.load();
       const condRawBits = await vaeEncoder.encode(encInputFp16);
       // Encoder output is [1, T_lat=1, 48, latentH, latentW] NTCHW. With
       // T_lat=1 the in-memory layout is contiguous over [C, H, W].
       const expectedRaw =
-        VAE_ENCODER_OUTPUT_LATENT_FRAMES *
-        FASTWAN_LATENT_CHANNELS *
-        shape.latentH *
-        shape.latentW;
+        VAE_ENCODER_OUTPUT_LATENT_FRAMES * FASTWAN_LATENT_CHANNELS * shape.latentH * shape.latentW;
       if (condRawBits.length !== expectedRaw) {
         throw new Error(
           `vae encoder output length ${condRawBits.length} != expected ${expectedRaw}`,
@@ -495,13 +477,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
     );
     const inputFp16 = f32ToF16Array(transposedPre);
     const framesBits = await vaeDecoder.decode(inputFp16);
-    return framesToBitmaps(
-      framesBits,
-      LIGHTTAE_OUT_FRAMES,
-      shape.pixelH,
-      shape.pixelW,
-      () => {},
-    );
+    return framesToBitmaps(framesBits, LIGHTTAE_OUT_FRAMES, shape.pixelH, shape.pixelW, () => {});
   };
 
   // UniPCMultistepScheduler with flow sigmas + predict_x0 + flow_prediction
@@ -516,7 +492,9 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
   log(
     `scheduler=unipc_flow_bh2 num_steps=${FASTWAN_NUM_STEPS} ` +
       `flow_shift=${FASTWAN_FLOW_SHIFT} ` +
-      `sigmas=[${Array.from(scheduler.sigmas).map((s) => s.toFixed(4)).join(",")}]`,
+      `sigmas=[${Array.from(scheduler.sigmas)
+        .map((s) => s.toFixed(4))
+        .join(",")}]`,
   );
 
   try {
@@ -686,13 +664,7 @@ export async function generateFastwan(opts: GenerateOptions): Promise<GenerateRe
 
 /** Permute axes 1<->2 of a [1, C, T, H, W] fp32 tensor to [1, T, C, H, W].
  *  Inner H*W plane is copied contiguously per (c,t) pair. */
-function transposeCT(
-  src: Float32Array,
-  C: number,
-  T: number,
-  H: number,
-  W: number,
-): Float32Array {
+function transposeCT(src: Float32Array, C: number, T: number, H: number, W: number): Float32Array {
   const plane = H * W;
   const out = new Float32Array(src.length);
   for (let t = 0; t < T; t++) {

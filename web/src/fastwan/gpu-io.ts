@@ -25,15 +25,18 @@ export type GpuDtype = "float16" | "float32" | "int64" | "int32";
  *  otherwise `ort.env.webgpu.device` is undefined. */
 export function getOrtGpuDevice(): GPUDevice | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (((ort.env as any).webgpu?.device) as GPUDevice | undefined) ?? null;
+  return ((ort.env as any).webgpu?.device as GPUDevice | undefined) ?? null;
 }
 
 function bytesPerEl(dtype: GpuDtype): number {
   switch (dtype) {
-    case "float16": return 2;
+    case "float16":
+      return 2;
     case "int32":
-    case "float32": return 4;
-    case "int64": return 8;
+    case "float32":
+      return 4;
+    case "int64":
+      return 8;
   }
 }
 
@@ -48,10 +51,7 @@ export function createGpuTensor(
   const numEl = dims.reduce((a, b) => a * b, 1);
   const bytes = Math.max(16, Math.ceil((numEl * bytesPerEl(dtype)) / 4) * 4);
   const buf = device.createBuffer({
-    usage:
-      GPUBufferUsage.STORAGE |
-      GPUBufferUsage.COPY_SRC |
-      GPUBufferUsage.COPY_DST,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     size: bytes,
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,17 +68,17 @@ export function gpuBufferOf(t: ort.Tensor): GPUBuffer {
 }
 
 export function destroyGpuTensor(t: ort.Tensor): void {
-  try { gpuBufferOf(t)?.destroy(); } catch { /* already destroyed */ }
+  try {
+    gpuBufferOf(t)?.destroy();
+  } catch {
+    /* already destroyed */
+  }
 }
 
 /** Upload CPU bytes into a GPU-tensor's backing buffer. Caller owns the
  *  source view; bytes are copied into a fresh mapped staging buffer and
  *  submitted. */
-export function writeGpuBytes(
-  device: GPUDevice,
-  tensor: ort.Tensor,
-  src: ArrayBufferView,
-): void {
+export function writeGpuBytes(device: GPUDevice, tensor: ort.Tensor, src: ArrayBufferView): void {
   const dst = gpuBufferOf(tensor);
   const aligned = Math.ceil(src.byteLength / 4) * 4;
   const staging = device.createBuffer({

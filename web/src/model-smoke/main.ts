@@ -63,7 +63,6 @@ if (new URLSearchParams(location.search).get("ortverbose") === "1") {
   ort.env.logLevel = "verbose";
 }
 
-
 interface Component {
   /** Display name in the log. */
   name: string;
@@ -620,9 +619,7 @@ const CANDIDATES: Candidate[] = [
           graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/decoder_init.onnx", 1117366418),
           dummyRun: {
             dtype: "float16" as const,
-            inputs: [
-              { match: ["latent"], shape: [1, 48, 1, 30, 52], gaussian: true },
-            ],
+            inputs: [{ match: ["latent"], shape: [1, 48, 1, 30, 52], gaussian: true }],
             dumpOutputs: true,
           },
         },
@@ -659,43 +656,235 @@ const CANDIDATES: Candidate[] = [
         extraInput?: string;
       };
       const parts: Part[] = [
-        { name: "part_00_pre", sizeBytes: 2669148, input: "latent", output: "/decoder/conv_in/Conv_output_0" },
-        { name: "part_01_mid_r0_a", sizeBytes: 56638207, input: "/decoder/conv_in/Conv_output_0", output: "/decoder/mid_block/resnets.0/conv1/Conv_output_0" },
-        { name: "part_01_mid_r0_b", sizeBytes: 56638737, input: "/decoder/mid_block/resnets.0/conv1/Conv_output_0", output: "/decoder/mid_block/resnets.0/Add_output_0", extraInput: "/decoder/conv_in/Conv_output_0" },
-        { name: "part_03_mid_attn", sizeBytes: 8430181, input: "/decoder/mid_block/resnets.0/Add_output_0", output: "/decoder/mid_block/attentions.0/Add_1_output_0" },
-        { name: "part_04_mid_r1_a", sizeBytes: 56638326, input: "/decoder/mid_block/attentions.0/Add_1_output_0", output: "/decoder/mid_block/resnets.1/conv1/Conv_output_0" },
-        { name: "part_04_mid_r1_b", sizeBytes: 56638865, input: "/decoder/mid_block/resnets.1/conv1/Conv_output_0", output: "/decoder/mid_block/resnets.1/Add_output_0", extraInput: "/decoder/mid_block/attentions.0/Add_1_output_0" },
-        { name: "part_06_up0_r0_a", sizeBytes: 56638630, input: "/decoder/mid_block/resnets.1/Add_output_0", output: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0" },
-        { name: "part_06_up0_r0_b", sizeBytes: 56639182, input: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.0/Add_output_0", extraInput: "/decoder/mid_block/resnets.1/Add_output_0" },
-        { name: "part_08_up0_r1_a", sizeBytes: 56638636, input: "/decoder/up_blocks.0/resnets.0/Add_output_0", output: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0" },
-        { name: "part_08_up0_r1_b", sizeBytes: 56639188, input: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.0/resnets.0/Add_output_0" },
-        { name: "part_10_up0_r2_a", sizeBytes: 56638636, input: "/decoder/up_blocks.0/resnets.1/Add_output_0", output: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0" },
-        { name: "part_10_up0_r2_b", sizeBytes: 56639188, input: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.0/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.0/resnets.1/Add_output_0" },
-        { name: "part_12_up0_upsample", sizeBytes: 18909499, input: "/decoder/up_blocks.0/resnets.2/Add_output_0", output: "/decoder/up_blocks.0/Add_output_0", extraInput: "/decoder/mid_block/resnets.1/Add_output_0" },
-        { name: "part_13_up1_r0_a", sizeBytes: 56638648, input: "/decoder/up_blocks.0/Add_output_0", output: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0" },
-        { name: "part_13_up1_r0_b", sizeBytes: 56639172, input: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.0/Add_output_0" },
-        { name: "part_15_up1_r1_a", sizeBytes: 56638636, input: "/decoder/up_blocks.1/resnets.0/Add_output_0", output: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0" },
-        { name: "part_15_up1_r1_b", sizeBytes: 56639188, input: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.1/resnets.0/Add_output_0" },
-        { name: "part_17_up1_r2_a", sizeBytes: 56638636, input: "/decoder/up_blocks.1/resnets.1/Add_output_0", output: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0" },
-        { name: "part_17_up1_r2_b", sizeBytes: 56639188, input: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.1/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.1/resnets.1/Add_output_0" },
-        { name: "part_19_up1_upsample", sizeBytes: 18909554, input: "/decoder/up_blocks.1/resnets.2/Add_output_0", output: "/decoder/up_blocks.1/Add_output_0", extraInput: "/decoder/up_blocks.0/Add_output_0" },
-        { name: "part_20_up2_r0_a", sizeBytes: 28326072, input: "/decoder/up_blocks.1/Add_output_0", output: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0" },
-        { name: "part_20_up2_r0_b", sizeBytes: 15224930, input: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.1/Add_output_0" },
-        { name: "part_22_up2_r1_a", sizeBytes: 14169260, input: "/decoder/up_blocks.2/resnets.0/Add_output_0", output: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0" },
-        { name: "part_22_up2_r1_b", sizeBytes: 14169812, input: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.2/resnets.0/Add_output_0" },
-        { name: "part_24_up2_r2_a", sizeBytes: 14169260, input: "/decoder/up_blocks.2/resnets.1/Add_output_0", output: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0" },
-        { name: "part_24_up2_r2_b", sizeBytes: 14169812, input: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.2/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.2/resnets.1/Add_output_0" },
-        { name: "part_26_up2_upsample", sizeBytes: 4750922, input: "/decoder/up_blocks.2/resnets.2/Add_output_0", output: "/decoder/up_blocks.2/Add_output_0", extraInput: "/decoder/up_blocks.1/Add_output_0" },
-        { name: "part_27_up3_r0_a", sizeBytes: 7090872, input: "/decoder/up_blocks.2/Add_output_0", output: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0" },
-        { name: "part_27_up3_r0_b", sizeBytes: 3820130, input: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.0/Add_output_0", extraInput: "/decoder/up_blocks.2/Add_output_0" },
-        { name: "part_29_up3_r1_a", sizeBytes: 3551404, input: "/decoder/up_blocks.3/resnets.0/Add_output_0", output: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0" },
-        { name: "part_29_up3_r1_b", sizeBytes: 3551956, input: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.1/Add_output_0", extraInput: "/decoder/up_blocks.3/resnets.0/Add_output_0" },
-        { name: "part_31_up3_r2_a", sizeBytes: 3551404, input: "/decoder/up_blocks.3/resnets.1/Add_output_0", output: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0" },
-        { name: "part_31_up3_r2_b", sizeBytes: 3551956, input: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0", output: "/decoder/up_blocks.3/resnets.2/Add_output_0", extraInput: "/decoder/up_blocks.3/resnets.1/Add_output_0" },
-        { name: "part_33_tail", sizeBytes: 32130432, input: "/decoder/up_blocks.3/resnets.2/Add_output_0", output: "frames" },
+        {
+          name: "part_00_pre",
+          sizeBytes: 2669148,
+          input: "latent",
+          output: "/decoder/conv_in/Conv_output_0",
+        },
+        {
+          name: "part_01_mid_r0_a",
+          sizeBytes: 56638207,
+          input: "/decoder/conv_in/Conv_output_0",
+          output: "/decoder/mid_block/resnets.0/conv1/Conv_output_0",
+        },
+        {
+          name: "part_01_mid_r0_b",
+          sizeBytes: 56638737,
+          input: "/decoder/mid_block/resnets.0/conv1/Conv_output_0",
+          output: "/decoder/mid_block/resnets.0/Add_output_0",
+          extraInput: "/decoder/conv_in/Conv_output_0",
+        },
+        {
+          name: "part_03_mid_attn",
+          sizeBytes: 8430181,
+          input: "/decoder/mid_block/resnets.0/Add_output_0",
+          output: "/decoder/mid_block/attentions.0/Add_1_output_0",
+        },
+        {
+          name: "part_04_mid_r1_a",
+          sizeBytes: 56638326,
+          input: "/decoder/mid_block/attentions.0/Add_1_output_0",
+          output: "/decoder/mid_block/resnets.1/conv1/Conv_output_0",
+        },
+        {
+          name: "part_04_mid_r1_b",
+          sizeBytes: 56638865,
+          input: "/decoder/mid_block/resnets.1/conv1/Conv_output_0",
+          output: "/decoder/mid_block/resnets.1/Add_output_0",
+          extraInput: "/decoder/mid_block/attentions.0/Add_1_output_0",
+        },
+        {
+          name: "part_06_up0_r0_a",
+          sizeBytes: 56638630,
+          input: "/decoder/mid_block/resnets.1/Add_output_0",
+          output: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0",
+        },
+        {
+          name: "part_06_up0_r0_b",
+          sizeBytes: 56639182,
+          input: "/decoder/up_blocks.0/resnets.0/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.0/resnets.0/Add_output_0",
+          extraInput: "/decoder/mid_block/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_08_up0_r1_a",
+          sizeBytes: 56638636,
+          input: "/decoder/up_blocks.0/resnets.0/Add_output_0",
+          output: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0",
+        },
+        {
+          name: "part_08_up0_r1_b",
+          sizeBytes: 56639188,
+          input: "/decoder/up_blocks.0/resnets.1/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.0/resnets.1/Add_output_0",
+          extraInput: "/decoder/up_blocks.0/resnets.0/Add_output_0",
+        },
+        {
+          name: "part_10_up0_r2_a",
+          sizeBytes: 56638636,
+          input: "/decoder/up_blocks.0/resnets.1/Add_output_0",
+          output: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0",
+        },
+        {
+          name: "part_10_up0_r2_b",
+          sizeBytes: 56639188,
+          input: "/decoder/up_blocks.0/resnets.2/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.0/resnets.2/Add_output_0",
+          extraInput: "/decoder/up_blocks.0/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_12_up0_upsample",
+          sizeBytes: 18909499,
+          input: "/decoder/up_blocks.0/resnets.2/Add_output_0",
+          output: "/decoder/up_blocks.0/Add_output_0",
+          extraInput: "/decoder/mid_block/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_13_up1_r0_a",
+          sizeBytes: 56638648,
+          input: "/decoder/up_blocks.0/Add_output_0",
+          output: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0",
+        },
+        {
+          name: "part_13_up1_r0_b",
+          sizeBytes: 56639172,
+          input: "/decoder/up_blocks.1/resnets.0/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.1/resnets.0/Add_output_0",
+          extraInput: "/decoder/up_blocks.0/Add_output_0",
+        },
+        {
+          name: "part_15_up1_r1_a",
+          sizeBytes: 56638636,
+          input: "/decoder/up_blocks.1/resnets.0/Add_output_0",
+          output: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0",
+        },
+        {
+          name: "part_15_up1_r1_b",
+          sizeBytes: 56639188,
+          input: "/decoder/up_blocks.1/resnets.1/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.1/resnets.1/Add_output_0",
+          extraInput: "/decoder/up_blocks.1/resnets.0/Add_output_0",
+        },
+        {
+          name: "part_17_up1_r2_a",
+          sizeBytes: 56638636,
+          input: "/decoder/up_blocks.1/resnets.1/Add_output_0",
+          output: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0",
+        },
+        {
+          name: "part_17_up1_r2_b",
+          sizeBytes: 56639188,
+          input: "/decoder/up_blocks.1/resnets.2/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.1/resnets.2/Add_output_0",
+          extraInput: "/decoder/up_blocks.1/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_19_up1_upsample",
+          sizeBytes: 18909554,
+          input: "/decoder/up_blocks.1/resnets.2/Add_output_0",
+          output: "/decoder/up_blocks.1/Add_output_0",
+          extraInput: "/decoder/up_blocks.0/Add_output_0",
+        },
+        {
+          name: "part_20_up2_r0_a",
+          sizeBytes: 28326072,
+          input: "/decoder/up_blocks.1/Add_output_0",
+          output: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0",
+        },
+        {
+          name: "part_20_up2_r0_b",
+          sizeBytes: 15224930,
+          input: "/decoder/up_blocks.2/resnets.0/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.2/resnets.0/Add_output_0",
+          extraInput: "/decoder/up_blocks.1/Add_output_0",
+        },
+        {
+          name: "part_22_up2_r1_a",
+          sizeBytes: 14169260,
+          input: "/decoder/up_blocks.2/resnets.0/Add_output_0",
+          output: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0",
+        },
+        {
+          name: "part_22_up2_r1_b",
+          sizeBytes: 14169812,
+          input: "/decoder/up_blocks.2/resnets.1/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.2/resnets.1/Add_output_0",
+          extraInput: "/decoder/up_blocks.2/resnets.0/Add_output_0",
+        },
+        {
+          name: "part_24_up2_r2_a",
+          sizeBytes: 14169260,
+          input: "/decoder/up_blocks.2/resnets.1/Add_output_0",
+          output: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0",
+        },
+        {
+          name: "part_24_up2_r2_b",
+          sizeBytes: 14169812,
+          input: "/decoder/up_blocks.2/resnets.2/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.2/resnets.2/Add_output_0",
+          extraInput: "/decoder/up_blocks.2/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_26_up2_upsample",
+          sizeBytes: 4750922,
+          input: "/decoder/up_blocks.2/resnets.2/Add_output_0",
+          output: "/decoder/up_blocks.2/Add_output_0",
+          extraInput: "/decoder/up_blocks.1/Add_output_0",
+        },
+        {
+          name: "part_27_up3_r0_a",
+          sizeBytes: 7090872,
+          input: "/decoder/up_blocks.2/Add_output_0",
+          output: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0",
+        },
+        {
+          name: "part_27_up3_r0_b",
+          sizeBytes: 3820130,
+          input: "/decoder/up_blocks.3/resnets.0/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.3/resnets.0/Add_output_0",
+          extraInput: "/decoder/up_blocks.2/Add_output_0",
+        },
+        {
+          name: "part_29_up3_r1_a",
+          sizeBytes: 3551404,
+          input: "/decoder/up_blocks.3/resnets.0/Add_output_0",
+          output: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0",
+        },
+        {
+          name: "part_29_up3_r1_b",
+          sizeBytes: 3551956,
+          input: "/decoder/up_blocks.3/resnets.1/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.3/resnets.1/Add_output_0",
+          extraInput: "/decoder/up_blocks.3/resnets.0/Add_output_0",
+        },
+        {
+          name: "part_31_up3_r2_a",
+          sizeBytes: 3551404,
+          input: "/decoder/up_blocks.3/resnets.1/Add_output_0",
+          output: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0",
+        },
+        {
+          name: "part_31_up3_r2_b",
+          sizeBytes: 3551956,
+          input: "/decoder/up_blocks.3/resnets.2/conv1/Conv_output_0",
+          output: "/decoder/up_blocks.3/resnets.2/Add_output_0",
+          extraInput: "/decoder/up_blocks.3/resnets.1/Add_output_0",
+        },
+        {
+          name: "part_33_tail",
+          sizeBytes: 32130432,
+          input: "/decoder/up_blocks.3/resnets.2/Add_output_0",
+          output: "frames",
+        },
       ];
       return parts.map((p, i) => {
-        const inputs: Array<{ match: string[]; shape: number[]; gaussian?: boolean; fromPrevOutput?: string }> = [
+        const inputs: Array<{
+          match: string[];
+          shape: number[];
+          gaussian?: boolean;
+          fromPrevOutput?: string;
+        }> = [
           i === 0
             ? { match: [p.input], shape: [1, 48, 1, 30, 52], gaussian: true }
             : { match: [p.input], shape: [], fromPrevOutput: p.input },
@@ -705,12 +894,7 @@ const CANDIDATES: Candidate[] = [
         }
         return {
           name: `decoder_init ${p.name}`,
-          graph: f(
-            "fastwan",
-            LOCAL_FASTWAN,
-            `onnx/vae/decoder_init_${p.name}.onnx`,
-            p.sizeBytes,
-          ),
+          graph: f("fastwan", LOCAL_FASTWAN, `onnx/vae/decoder_init_${p.name}.onnx`, p.sizeBytes),
           dummyRun: {
             dtype: "float16" as const,
             inputs,
@@ -721,8 +905,7 @@ const CANDIDATES: Candidate[] = [
   },
   {
     id: "fastwan-part-13a-pre-conv-tiled",
-    label:
-      "FastWan part_13a: pre + 6 Conv tiles across sessions (TDR fix test)",
+    label: "FastWan part_13a: pre + 6 Conv tiles across sessions (TDR fix test)",
     components: (() => {
       const tiles = Array.from({ length: 6 }, (_, i) => ({
         name: `part_13a_conv tile ${i + 1}/6 (H=10 slice)`,
@@ -738,8 +921,7 @@ const CANDIDATES: Candidate[] = [
             {
               match: ["/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0"],
               shape: [],
-              fromPrevOutput:
-                "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
+              fromPrevOutput: "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
             },
           ],
         },
@@ -770,8 +952,7 @@ const CANDIDATES: Candidate[] = [
   },
   {
     id: "fastwan-part-13a-pre-conv-split",
-    label:
-      "FastWan part_13a split at Pad (_pre then _conv, separate sessions, TDR fix test)",
+    label: "FastWan part_13a split at Pad (_pre then _conv, separate sessions, TDR fix test)",
     // Part_13a TDRs standalone because ~18 pre-Conv ops + one big Conv3D all
     // run inside one session.run, so cumulative GPU time exceeds Windows D3D12
     // TDR (~2-3s). Splitting at the Pad output into two session.runs forces a
@@ -783,12 +964,7 @@ const CANDIDATES: Candidate[] = [
     components: [
       {
         name: "part_13a_pre (RMSNorm+SiLU+Pad)",
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          "onnx/vae/decoder_init_part_13_up1_r0_a_pre.onnx",
-          9506,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/decoder_init_part_13_up1_r0_a_pre.onnx", 9506),
         dummyRun: {
           dtype: "float16" as const,
           inputs: [
@@ -814,8 +990,7 @@ const CANDIDATES: Candidate[] = [
             {
               match: ["/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0"],
               shape: [],
-              fromPrevOutput:
-                "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
+              fromPrevOutput: "/decoder/up_blocks.1/resnets.0/conv1/Pad_output_0",
             },
           ],
         },
@@ -836,12 +1011,7 @@ const CANDIDATES: Candidate[] = [
     components: [
       {
         name: "part_13a standalone (random input)",
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          "onnx/vae/decoder_init_part_13_up1_r0_a.onnx",
-          56638648,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/decoder_init_part_13_up1_r0_a.onnx", 56638648),
         dummyRun: {
           dtype: "float16" as const,
           inputs: [
@@ -865,12 +1035,7 @@ const CANDIDATES: Candidate[] = [
     // still TDR, the theory is wrong and something else is in play.
     components: Array.from({ length: 3 }, (_, i) => ({
       name: `Conv3D chain n=5 run ${i + 1}/3 (88 Gop x 5, separate session)`,
-      graph: f(
-        "fastwan",
-        LOCAL_FASTWAN,
-        "onnx/vae/conv3d_chain_n5.onnx",
-        70.8 * 1024 * 1024,
-      ),
+      graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/conv3d_chain_n5.onnx", 70.8 * 1024 * 1024),
       dummyRun: {
         dtype: "float16" as const,
         inputs: [{ match: ["x"], shape: [1, 512, 2, 60, 104], gaussian: true }],
@@ -892,12 +1057,7 @@ const CANDIDATES: Candidate[] = [
       ];
       return sizes.map((p) => ({
         name: `Conv3D chain n=${p.n} (${p.n} x 88 Gop 512->512 k3p1 [1,512,2,60,104])`,
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          `onnx/vae/conv3d_chain_n${p.n}.onnx`,
-          p.bytes,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, `onnx/vae/conv3d_chain_n${p.n}.onnx`, p.bytes),
         dummyRun: {
           dtype: "float16" as const,
           inputs: [{ match: ["x"], shape: [1, 512, 2, 60, 104], gaussian: true }],
@@ -913,23 +1073,67 @@ const CANDIDATES: Candidate[] = [
       // pad=0 kernel=3x3x3 matching real-VAE Conv3Ds. Running all in sequence
       // tells us which shape TDRs in isolation. Prior run proved E
       // ([1,256,2,240,416] 256->256) runs in 5.6s; not tested here.
-      const probes: { tag: string; inC: number; outC: number; H: number; W: number; bytes: number }[] = [
-        { tag: "Btile_1024to512_15x208", inC: 1024, outC: 512, H: 17, W: 210, bytes: 28.3 * 1024 * 1024 },
-        { tag: "G_1024to1024_30x52", inC: 1024, outC: 1024, H: 32, W: 54, bytes: 56.6 * 1024 * 1024 },
-        { tag: "A_1024to1024_60x104", inC: 1024, outC: 1024, H: 62, W: 106, bytes: 56.6 * 1024 * 1024 },
-        { tag: "B_1024to512_120x208", inC: 1024, outC: 512, H: 122, W: 210, bytes: 28.3 * 1024 * 1024 },
-        { tag: "C_512to512_120x208", inC: 512, outC: 512, H: 122, W: 210, bytes: 14.2 * 1024 * 1024 },
-        { tag: "D_512to256_240x416", inC: 512, outC: 256, H: 242, W: 418, bytes: 7.1 * 1024 * 1024 },
+      const probes: {
+        tag: string;
+        inC: number;
+        outC: number;
+        H: number;
+        W: number;
+        bytes: number;
+      }[] = [
+        {
+          tag: "Btile_1024to512_15x208",
+          inC: 1024,
+          outC: 512,
+          H: 17,
+          W: 210,
+          bytes: 28.3 * 1024 * 1024,
+        },
+        {
+          tag: "G_1024to1024_30x52",
+          inC: 1024,
+          outC: 1024,
+          H: 32,
+          W: 54,
+          bytes: 56.6 * 1024 * 1024,
+        },
+        {
+          tag: "A_1024to1024_60x104",
+          inC: 1024,
+          outC: 1024,
+          H: 62,
+          W: 106,
+          bytes: 56.6 * 1024 * 1024,
+        },
+        {
+          tag: "B_1024to512_120x208",
+          inC: 1024,
+          outC: 512,
+          H: 122,
+          W: 210,
+          bytes: 28.3 * 1024 * 1024,
+        },
+        {
+          tag: "C_512to512_120x208",
+          inC: 512,
+          outC: 512,
+          H: 122,
+          W: 210,
+          bytes: 14.2 * 1024 * 1024,
+        },
+        {
+          tag: "D_512to256_240x416",
+          inC: 512,
+          outC: 256,
+          H: 242,
+          W: 418,
+          bytes: 7.1 * 1024 * 1024,
+        },
         { tag: "F_256to3_240x416", inC: 256, outC: 3, H: 242, W: 418, bytes: 0.1 * 1024 * 1024 },
       ];
       return probes.map((p) => ({
         name: `Conv3D ${p.tag} [1,${p.inC},4,${p.H},${p.W}] -> [1,${p.outC},2,${p.H - 2},${p.W - 2}]`,
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          `onnx/vae/conv3d_probe_${p.tag}.onnx`,
-          p.bytes,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, `onnx/vae/conv3d_probe_${p.tag}.onnx`, p.bytes),
         dummyRun: {
           dtype: "float16" as const,
           inputs: [{ match: ["x"], shape: [1, p.inC, 4, p.H, p.W], gaussian: true }],
@@ -939,8 +1143,7 @@ const CANDIDATES: Candidate[] = [
   },
   {
     id: "fastwan-vae-final-block",
-    label:
-      "FastWan 2.2 AutoencoderKLWan final up_block probe (worst-case Conv3D, 25 MB)",
+    label: "FastWan 2.2 AutoencoderKLWan final up_block probe (worst-case Conv3D, 25 MB)",
     components: [
       // Isolates up_blocks[-1] at full 240x416 spatial to answer: does per-block
       // chunking dodge the TDR, or is a single Conv3D dispatch on 240x416x256ch
@@ -948,12 +1151,7 @@ const CANDIDATES: Candidate[] = [
       // ~4x heavier, so if this TDRs chunking won't save us.
       {
         name: "final up_block (x[1,512,1,240,416] + 6 caches -> y + caches)",
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          "onnx/vae/probe_final_block.onnx",
-          25.1 * 1024 * 1024,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/vae/probe_final_block.onnx", 25.1 * 1024 * 1024),
         dummyRun: {
           dtype: "float16" as const,
           inputs: [
@@ -985,8 +1183,7 @@ const CANDIDATES: Candidate[] = [
   },
   {
     id: "fastwan-vae-noise",
-    label:
-      "FastWan 2.2 LightTAE VAE decoder: pure Gaussian-noise input, renders frame 0",
+    label: "FastWan 2.2 LightTAE VAE decoder: pure Gaussian-noise input, renders frame 0",
     components: [
       {
         name: "vae_decoder + noise (diagnoses gray-output complaint from full pipeline)",
@@ -1076,7 +1273,12 @@ const CANDIDATES: Candidate[] = [
       // ORT-web WebGPU + whether q4 gives a meaningful speedup.
       {
         name: "shell_pre q4f16 (full-shape)",
-        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer-q4f16/shell_pre.onnx", 52 * 1024 * 1024),
+        graph: f(
+          "fastwan",
+          LOCAL_FASTWAN,
+          "onnx/transformer-q4f16/shell_pre.onnx",
+          52 * 1024 * 1024,
+        ),
         externalData: {
           file: f(
             "fastwan",
@@ -1202,12 +1404,7 @@ const CANDIDATES: Candidate[] = [
     components: [
       {
         name: "block_00_debug full-shape (8190 tokens, graphOpt=disabled)",
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          "onnx/transformer/block_00_debug.onnx",
-          183_706,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, "onnx/transformer/block_00_debug.onnx", 183_706),
         externalData: {
           file: f(
             "fastwan",
@@ -1244,20 +1441,17 @@ const CANDIDATES: Candidate[] = [
       //   seq=2048: 192 MB
       //   seq=4096: 768 MB  (may OOM on mobile)
       //   seq=8190: 3.22 GB (exceeds typical maxBufferSize; skip until others prove bug)
-      ...([
-        { seq: 1024, heads: 24, tag: "" },
-        { seq: 2048, heads: 24, tag: "" },
-        { seq: 4096, heads: 24, tag: "" },
-        { seq: 8190, heads: 1, tag: "-h1" },
-        { seq: 8190, heads: 24, tag: "-h24" },
-      ] as const).map(({ seq, heads, tag }) => ({
+      ...(
+        [
+          { seq: 1024, heads: 24, tag: "" },
+          { seq: 2048, heads: 24, tag: "" },
+          { seq: 4096, heads: 24, tag: "" },
+          { seq: 8190, heads: 1, tag: "-h1" },
+          { seq: 8190, heads: 24, tag: "-h24" },
+        ] as const
+      ).map(({ seq, heads, tag }) => ({
         name: `probe seq=${seq} heads=${heads} (intermediate scores ~${((heads * seq * seq * 2) / 1024 / 1024).toFixed(0)} MB)`,
-        graph: f(
-          "fastwan",
-          LOCAL_FASTWAN,
-          `onnx/probe/probe-${seq}${tag}.onnx`,
-          2048,
-        ),
+        graph: f("fastwan", LOCAL_FASTWAN, `onnx/probe/probe-${seq}${tag}.onnx`, 2048),
         graphOptLevel: "disabled" as const,
         dummyRun: {
           inputs: [
@@ -1530,14 +1724,11 @@ async function tryComponent(
   // Use blob URLs (avoids copying multi-GB files into wasm heap as ArrayBuffer).
   const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(c.graph);
   let revokeData = () => {};
-  const ortVerbose =
-    new URLSearchParams(location.search).get("ortverbose") === "1";
+  const ortVerbose = new URLSearchParams(location.search).get("ortverbose") === "1";
   const sessionOptions: ort.InferenceSession.SessionOptions = {
     executionProviders: providers(),
     graphOptimizationLevel: c.graphOptLevel ?? "all",
-    ...(ortVerbose
-      ? { logSeverityLevel: 0, logVerbosityLevel: 1 }
-      : {}),
+    ...(ortVerbose ? { logSeverityLevel: 0, logVerbosityLevel: 1 } : {}),
   };
   if (c.graphOptLevel) {
     log(`graphOptimizationLevel: ${c.graphOptLevel}`);
@@ -1604,7 +1795,9 @@ async function tryComponent(
           const prevName = findName(Object.keys(prevOutputs), [spec.fromPrevOutput]);
           const prevT = prevName ? prevOutputs[prevName] : undefined;
           if (!prevT) {
-            log(`  dummyRun: fromPrevOutput ${spec.fromPrevOutput} not found - falling back to zeros`);
+            log(
+              `  dummyRun: fromPrevOutput ${spec.fromPrevOutput} not found - falling back to zeros`,
+            );
             feeds[inputName] = buildTensor(spec.dtype ?? dummyDtype, len, spec.shape);
           } else {
             feeds[inputName] = prevT;

@@ -56,19 +56,20 @@ export class VaeEncoder {
    *  to raw latents (fp16 bits, [1, 1, 48, latentH, latentW] NTCHW). */
   async encode(frames: Uint16Array): Promise<Uint16Array> {
     if (!this.session) throw new Error("VaeEncoder.load() must be called first");
-    const expected =
-      VAE_ENCODER_INPUT_FRAMES * 3 * this.shape.pixelH * this.shape.pixelW;
+    const expected = VAE_ENCODER_INPUT_FRAMES * 3 * this.shape.pixelH * this.shape.pixelW;
     if (frames.length !== expected) {
       throw new Error(
         `VaeEncoder.encode: expected ${expected} fp16 elements, got ${frames.length}`,
       );
     }
     const feeds: Record<string, ort.Tensor> = {
-      frames: new ort.Tensor(
-        "float16",
-        frames,
-        [1, VAE_ENCODER_INPUT_FRAMES, 3, this.shape.pixelH, this.shape.pixelW],
-      ),
+      frames: new ort.Tensor("float16", frames, [
+        1,
+        VAE_ENCODER_INPUT_FRAMES,
+        3,
+        this.shape.pixelH,
+        this.shape.pixelW,
+      ]),
     };
     const results = await this.session.run(feeds);
     const key = "latents" in results ? "latents" : Object.keys(results)[0];

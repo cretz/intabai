@@ -69,9 +69,7 @@ export class VideoGenModelManager {
     clearBtn.textContent = "clear all cached models";
     clearBtn.addEventListener("click", async () => {
       if (
-        !confirm(
-          "Delete all cached video-gen models? You'll need to re-download them next time.",
-        )
+        !confirm("Delete all cached video-gen models? You'll need to re-download them next time.")
       )
         return;
       clearBtn.disabled = true;

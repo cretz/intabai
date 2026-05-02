@@ -66,9 +66,7 @@ export class TextEncoder {
     private readonly providers: ("webgpu" | "wasm")[] = ["webgpu", "wasm"],
   ) {
     if (files.layers.length !== UMT5_NUM_LAYERS) {
-      throw new Error(
-        `expected ${UMT5_NUM_LAYERS} UMT5 layer files, got ${files.layers.length}`,
-      );
+      throw new Error(`expected ${UMT5_NUM_LAYERS} UMT5 layer files, got ${files.layers.length}`);
     }
   }
 
@@ -109,11 +107,7 @@ export class TextEncoder {
     // Run the 24 encoder layers, disposing each session before loading
     // the next to keep peak GPU memory at one layer.
     for (let i = 0; i < UMT5_NUM_LAYERS; i++) {
-      const session = await createSession(
-        this.cache,
-        this.files.layers[i],
-        this.providers,
-      );
+      const session = await createSession(this.cache, this.files.layers[i], this.providers);
       const feeds: Record<string, ort.Tensor> = {
         hidden_states: new ort.Tensor("float16", hidden, hiddenDims),
         attention_mask: new ort.Tensor("float16", mask, maskDims),
@@ -138,11 +132,7 @@ export class TextEncoder {
     }
 
     // Final RMSNorm.
-    const post = await createSession(
-      this.cache,
-      this.files.shellPost,
-      this.providers,
-    );
+    const post = await createSession(this.cache, this.files.shellPost, this.providers);
     const postFeed = new ort.Tensor("float16", hidden, hiddenDims);
     try {
       const results = await post.run({ hidden_states: postFeed });
@@ -177,9 +167,7 @@ function pickOutput(results: ort.InferenceSession.OnnxValueMapType): ort.Tensor 
   // Export uses `hidden_states_out` for layers and `last_hidden_state`
   // for shell_post. Accept either, fall back to the first output.
   const keys = Object.keys(results);
-  const name =
-    keys.find((k) => k === "hidden_states_out" || k === "last_hidden_state") ??
-    keys[0];
+  const name = keys.find((k) => k === "hidden_states_out" || k === "last_hidden_state") ?? keys[0];
   const t = results[name];
   if (!t) throw new Error("text encoder session produced no output");
   return t as ort.Tensor;

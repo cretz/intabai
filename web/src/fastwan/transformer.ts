@@ -95,11 +95,7 @@ export interface TransformerFiles {
   shellPost: OrtModelFile;
 }
 
-export type BlockProgress = (
-  stepIndex: number,
-  blockIndex: number,
-  totalBlocks: number,
-) => void;
+export type BlockProgress = (stepIndex: number, blockIndex: number, totalBlocks: number) => void;
 
 export interface ForwardInput {
   /** Current noisy latent. [1, 48, 21, 30, 30] fp16 bits. */
@@ -137,12 +133,7 @@ function shapeSizes(shape: FastwanShape) {
     timestepProj: 1 * seq * FASTWAN_TIMESTEP_PROJ_ARITY * FASTWAN_HIDDEN,
     temb: 1 * seq * FASTWAN_HIDDEN,
     freqs: 1 * seq * 1 * FASTWAN_HEAD_DIM,
-    noisePred:
-      1 *
-      FASTWAN_LATENT_CHANNELS *
-      FASTWAN_LATENT_FRAMES *
-      shape.latentH *
-      shape.latentW,
+    noisePred: 1 * FASTWAN_LATENT_CHANNELS * FASTWAN_LATENT_FRAMES * shape.latentH * shape.latentW,
   };
 }
 
@@ -165,18 +156,10 @@ export class Transformer {
 
   async load(): Promise<void> {
     if (!this.shellPre) {
-      this.shellPre = await createSession(
-        this.cache,
-        this.files.shellPre,
-        this.providers,
-      );
+      this.shellPre = await createSession(this.cache, this.files.shellPre, this.providers);
     }
     if (!this.shellPost) {
-      this.shellPost = await createSession(
-        this.cache,
-        this.files.shellPost,
-        this.providers,
-      );
+      this.shellPost = await createSession(this.cache, this.files.shellPost, this.providers);
     }
   }
 
@@ -219,9 +202,7 @@ export class Transformer {
     // int64 stays on CPU; ORT routes shape/index ops to the wasm EP anyway.
     const mask = input.firstFrameMask;
     if (mask && mask.length !== shape.seqLen) {
-      throw new Error(
-        `firstFrameMask length ${mask.length} != seqLen ${shape.seqLen}`,
-      );
+      throw new Error(`firstFrameMask length ${mask.length} != seqLen ${shape.seqLen}`);
     }
     const timestepArr = new BigInt64Array(shape.seqLen);
     const tBig = BigInt(input.timestep);
@@ -242,21 +223,9 @@ export class Transformer {
       shape.latentH,
       shape.latentW,
     ]);
-    const gpuEncoderHS = createGpuTensor(device, "float16", [
-      1,
-      FASTWAN_TEXT_SEQ_LEN,
-      4096,
-    ]);
-    const gpuTokensA = createGpuTensor(device, "float16", [
-      1,
-      shape.seqLen,
-      FASTWAN_HIDDEN,
-    ]);
-    const gpuTokensB = createGpuTensor(device, "float16", [
-      1,
-      shape.seqLen,
-      FASTWAN_HIDDEN,
-    ]);
+    const gpuEncoderHS = createGpuTensor(device, "float16", [1, FASTWAN_TEXT_SEQ_LEN, 4096]);
+    const gpuTokensA = createGpuTensor(device, "float16", [1, shape.seqLen, FASTWAN_HIDDEN]);
+    const gpuTokensB = createGpuTensor(device, "float16", [1, shape.seqLen, FASTWAN_HIDDEN]);
     const gpuEncProj = createGpuTensor(device, "float16", [
       1,
       FASTWAN_TEXT_SEQ_LEN,
@@ -268,23 +237,9 @@ export class Transformer {
       FASTWAN_TIMESTEP_PROJ_ARITY,
       FASTWAN_HIDDEN,
     ]);
-    const gpuTemb = createGpuTensor(device, "float16", [
-      1,
-      shape.seqLen,
-      FASTWAN_HIDDEN,
-    ]);
-    const gpuFreqsCos = createGpuTensor(device, "float32", [
-      1,
-      shape.seqLen,
-      1,
-      FASTWAN_HEAD_DIM,
-    ]);
-    const gpuFreqsSin = createGpuTensor(device, "float32", [
-      1,
-      shape.seqLen,
-      1,
-      FASTWAN_HEAD_DIM,
-    ]);
+    const gpuTemb = createGpuTensor(device, "float16", [1, shape.seqLen, FASTWAN_HIDDEN]);
+    const gpuFreqsCos = createGpuTensor(device, "float32", [1, shape.seqLen, 1, FASTWAN_HEAD_DIM]);
+    const gpuFreqsSin = createGpuTensor(device, "float32", [1, shape.seqLen, 1, FASTWAN_HEAD_DIM]);
     const gpuNoisePred = createGpuTensor(device, "float16", [
       1,
       FASTWAN_LATENT_CHANNELS,
@@ -305,7 +260,8 @@ export class Transformer {
         gpuFreqsCos,
         gpuFreqsSin,
         gpuNoisePred,
-      ]) destroyGpuTensor(t);
+      ])
+        destroyGpuTensor(t);
     };
 
     try {
@@ -330,13 +286,12 @@ export class Transformer {
       debug?.(`shell_pre: ${(performance.now() - tPre).toFixed(0)} ms`);
 
       if (wantsStats) {
-        const [tokensBits, encProjBits, timestepProjBits, tembBits] =
-          await Promise.all([
-            readGpuFp16(device, gpuTokensA, sizes.tokens),
-            readGpuFp16(device, gpuEncProj, sizes.encProj),
-            readGpuFp16(device, gpuTimestepProj, sizes.timestepProj),
-            readGpuFp16(device, gpuTemb, sizes.temb),
-          ]);
+        const [tokensBits, encProjBits, timestepProjBits, tembBits] = await Promise.all([
+          readGpuFp16(device, gpuTokensA, sizes.tokens),
+          readGpuFp16(device, gpuEncProj, sizes.encProj),
+          readGpuFp16(device, gpuTimestepProj, sizes.timestepProj),
+          readGpuFp16(device, gpuTemb, sizes.temb),
+        ]);
         stats!("shell_pre.tokens", tokensBits);
         stats!("shell_pre.enc_proj", encProjBits);
         stats!("shell_pre.timestep_proj", timestepProjBits);
@@ -379,10 +334,7 @@ export class Transformer {
           const isFirstOrLast = i === 0 || i === FASTWAN_NUM_BLOCKS - 1;
           if (wantsStats && isFirstOrLast) {
             const outBits = await readGpuFp16(device, nextTokens, sizes.tokens);
-            stats!(
-              `block_${i.toString().padStart(2, "0")}.out`,
-              outBits,
-            );
+            stats!(`block_${i.toString().padStart(2, "0")}.out`, outBits);
           }
         } catch (err) {
           if (nextLoad) {
@@ -428,4 +380,3 @@ export class Transformer {
     }
   }
 }
-

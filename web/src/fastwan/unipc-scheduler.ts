@@ -24,12 +24,7 @@ function expm1(x: number): number {
 }
 
 /** tensor_out = a * scale_a + b * scale_b (new array). */
-function addScaled(
-  a: Float32Array,
-  scaleA: number,
-  b: Float32Array,
-  scaleB: number,
-): Float32Array {
+function addScaled(a: Float32Array, scaleA: number, b: Float32Array, scaleB: number): Float32Array {
   const out = new Float32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = a[i] * scaleA + b[i] * scaleB;
   return out;
@@ -119,7 +114,9 @@ export class UniPCFlowScheduler {
    *  identical length. Caller owns lifecycle - this returns a new buffer. */
   step(modelOutput: Float32Array, sample: Float32Array): Float32Array {
     if (this.stepIndex >= this.numInferenceSteps) {
-      throw new Error(`UniPC: step called past end (${this.stepIndex} >= ${this.numInferenceSteps})`);
+      throw new Error(
+        `UniPC: step called past end (${this.stepIndex} >= ${this.numInferenceSteps})`,
+      );
     }
 
     const sigma_cur = this.sigmas[this.stepIndex];
@@ -129,14 +126,9 @@ export class UniPCFlowScheduler {
     // Corrector (if we have history). Uses this.lastOrder (set by previous
     // step's predictor), and must run BEFORE we shift history.
     let correctedSample = sample;
-    const useCorrector =
-      this.stepIndex > 0 && this.lastSample !== null;
+    const useCorrector = this.stepIndex > 0 && this.lastSample !== null;
     if (useCorrector) {
-      correctedSample = this.correctorUpdate(
-        m_converted,
-        this.lastSample!,
-        this.lastOrder,
-      );
+      correctedSample = this.correctorUpdate(m_converted, this.lastSample!, this.lastOrder);
     }
 
     // Shift history: [a, b] -> [b, m_converted]
@@ -165,11 +157,7 @@ export class UniPCFlowScheduler {
 
   /** multistep_uni_p_bh_update for predict_x0=true, flow_sigmas=true, bh2.
    *  Moves `sample` at sigmas[stepIndex] to the next sigma sigmas[stepIndex+1]. */
-  private predictorUpdate(
-    m0: Float32Array,
-    sample: Float32Array,
-    order: number,
-  ): Float32Array {
+  private predictorUpdate(m0: Float32Array, sample: Float32Array, order: number): Float32Array {
     const sigma_t = this.sigmas[this.stepIndex + 1];
     const sigma_s0 = this.sigmas[this.stepIndex];
     const alpha_t = 1 - sigma_t;

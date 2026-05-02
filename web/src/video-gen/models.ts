@@ -10,10 +10,7 @@
 // a `generate()` entry point plus a `xxxAllFiles()` manifest.
 
 import type { ModelFile } from "../shared/model-cache";
-import {
-  fastwanAllFiles,
-  type FastwanTransformerPrecision,
-} from "../fastwan/models";
+import { fastwanAllFiles, type FastwanTransformerPrecision } from "../fastwan/models";
 import type { FastwanResolution } from "../fastwan/transformer";
 
 export type VideoBackend = "fastwan";
@@ -87,8 +84,7 @@ export const VIDEO_GEN_MODELS: VideoModelEntry[] = [
   {
     id: "fastwan_22_ti2v_5b_576_fp16",
     name: "FastWan 2.2 TI2V 5B (576×576, fp16, desktop)",
-    description:
-      "576×576 with fp16 transformer blocks. Desktop GPUs only.",
+    description: "576×576 with fp16 transformer blocks. Desktop GPUs only.",
     files: fastwanAllFiles("fp16", 576),
     backend: "fastwan",
     transformerPrecision: "fp16",
