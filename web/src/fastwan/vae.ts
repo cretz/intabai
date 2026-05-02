@@ -84,7 +84,7 @@ export class VaeDecoder {
 // LightTAE. The A/B confirmed the swap did not improve quality (see
 // notes/image.png vs notes/image-previous.png), so generate.ts always uses
 // LightTAE now. The class is retained because the ONNX export pipeline
-// (web/scripts/export-fastwan-vae-kl-streaming.py with --decompose-conv3d),
+// (web/scripts/fastwan/export-fastwan-vae-kl-streaming.py with --decompose-conv3d),
 // the 32-slot streaming-cache contract, and the GPU-resident io-binding
 // loop took real work to land. If we ever revisit Wan VAE on the web (say,
 // once ORT-web ships a working Conv3D kernel) this is the entry point.

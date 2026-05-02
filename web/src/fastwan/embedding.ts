@@ -10,7 +10,7 @@
 //
 // Quantization: per-row symmetric int8 with fp16 scales.
 //   row[i][j]  (fp16)  ~=  int8_q[i][j] * scale_fp16[i]
-// Files written by web/scripts/quantize-embedding.py and shipped in
+// Files written by web/scripts/shared/quantize-embedding.py and shipped in
 // `text-encoder-q4f16/` alongside the transformer layers:
 //   embedding_q8.bin      [vocab, hidden] int8, row-major, 1.05 GB
 //   embedding_scales.bin  [vocab]         fp16 scales,     0.51 MB

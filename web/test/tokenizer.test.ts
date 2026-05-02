@@ -1,7 +1,7 @@
 // Verifies our hand-ported CLIP BPE tokenizer (sd15/tokenizer.ts) against
 // a Python reference produced by transformers.CLIPTokenizer. The reference
 // output is committed at fixtures/clip/expected-ids.json - see
-// scripts/clip_reference_test_gen.py for the regenerator.
+// scripts/face-swap/clip_reference_test_gen.py for the regenerator.
 //
 // This test is intentionally JS-only and reads only committed fixture files
 // so it can run in CI without Python, transformers, or network access.

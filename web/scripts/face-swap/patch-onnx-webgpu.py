@@ -52,6 +52,9 @@ import numpy
 import onnx
 from onnx import helper, numpy_helper
 
+# Allow `from lib.X import Y` from any scripts/ subdir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.onnx_patch_common import sha256, verify_patch
 
 

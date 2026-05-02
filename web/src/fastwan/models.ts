@@ -235,10 +235,12 @@ export function fastwanTransformerFiles(
 // UMT5 tokenizer.json bundled with the source pipeline. Served from the same
 // vite proxy root for dev.
 
+// Tokenizer lives at the repo root (sibling of onnx/), not under onnx/, so
+// it does not use FASTWAN_BASE.
 export const FASTWAN_TOKENIZER_FILE: ModelFile = {
   id: "fastwan_tokenizer_json",
   name: "tokenizer/tokenizer.json",
-  url: "/local-models/fastwan/tokenizer/tokenizer.json",
+  url: "https://huggingface.co/cretz/FastWan2.2-TI2V-5B-ONNX-sharded/resolve/main/tokenizer/tokenizer.json",
   sizeBytes: 16_500_000,
 };
 

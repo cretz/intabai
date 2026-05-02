@@ -26,6 +26,9 @@ from collections import defaultdict
 from pathlib import Path
 
 # Reuse the shared protobuf parsing infrastructure
+# Allow `from lib.X import Y` from any scripts/ subdir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.onnx_patch_common import (
     WIRE_LEN,
     encode_len_prefixed,

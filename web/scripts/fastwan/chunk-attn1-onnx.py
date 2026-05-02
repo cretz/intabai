@@ -16,6 +16,9 @@ from pathlib import Path
 
 import onnx
 
+# Allow `from lib.X import Y` from any scripts/ subdir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.chunk_attn1 import chunk_attn1
 
 

@@ -22,10 +22,13 @@ export async function encodeFramesToMp4(opts: EncodeMp4Options): Promise<Blob> {
   const w = frames[0].width;
   const h = frames[0].height;
 
+  // Thresholds are each AVC level's MaxFS in samples; see process-video-loop.ts.
   const codedArea = w * (Math.ceil(h / 16) * 16);
-  let avcLevel = "640028";
-  if (codedArea > 2097152) avcLevel = "64002A";
-  if (codedArea > 8912896) avcLevel = "640033";
+  let avcLevel = "640028"; // 4.0
+  if (codedArea > 2097152) avcLevel = "64002A"; // 4.2
+  if (codedArea > 2228224) avcLevel = "640032"; // 5.0
+  if (codedArea > 5652480) avcLevel = "640033"; // 5.1
+  if (codedArea > 9437184) avcLevel = "640034"; // 5.2
 
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({

@@ -52,6 +52,9 @@ import torch.nn as nn
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 from accelerate.utils import infer_auto_device_map
 
+# Allow `from lib.X import Y` from any scripts/ subdir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.chunk_attn1 import chunk_attn1_file
 
 

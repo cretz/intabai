@@ -113,7 +113,7 @@ interface Component {
       gaussian?: boolean;
       /** Deterministic fp16 fill: val[i] = sin(i * freq + offset) * amplitude,
        *  cast fp32 -> fp16. Matches the fill in
-       *  web/scripts/probe-attn-matmul.py so browser and Python see the
+       *  web/scripts/fastwan/probe-attn-matmul.py so browser and Python see the
        *  same bytes. Only meaningful for dtype: "float16".
        *  Default freq/amp if only `sinOffset` provided: freq=0.0017 amp=8.0. */
       sinFill?: { offset: number; freq?: number; amplitude?: number };
@@ -1238,7 +1238,7 @@ const CANDIDATES: Candidate[] = [
       // Minimal ONNX: Transpose(K) -> MatMul -> Mul(scale) -> Softmax -> MatMul(.V).
       // Inputs filled deterministically via sinFill so browser + Python
       // see identical fp16 bytes. Diff first-32 hex of output against the
-      // hex printed by web/scripts/probe-attn-matmul.py.
+      // hex printed by web/scripts/fastwan/probe-attn-matmul.py.
       // Intermediate scores buffer: heads*seq^2*2 bytes.
       //   seq=1024:  48 MB  (well within maxBufferSize)
       //   seq=2048: 192 MB

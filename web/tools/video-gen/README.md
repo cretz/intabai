@@ -112,11 +112,11 @@ rewrites that we evaluated and decided not to ship:
 - **Softmax kernel fp16 -> fp32 accumulator.** Same story: removed
   alongside MatMul, A/B was inconclusive. Left off.
 
-`web/scripts/patch-ort-matmul-fp32-acc.mjs` keeps both blocks
-commented out with restore instructions in the header. If you want
-to re-enable them, uncomment the relevant block, then from `web/`
-run `node scripts/patch-ort-matmul-fp32-acc.mjs && node
-scripts/patch-ort-conv3d-fp16.mjs && npx patch-package
+`web/scripts/ort-patches/patch-ort-matmul-fp32-acc.mjs` keeps both
+blocks commented out with restore instructions in the header. If you
+want to re-enable them, uncomment the relevant block, then from `web/`
+run `node scripts/ort-patches/patch-ort-matmul-fp32-acc.mjs && node
+scripts/ort-patches/patch-ort-conv3d-fp16.mjs && npx patch-package
 onnxruntime-web` and `rm -rf node_modules/.vite`.
 
 ### Float16Array gotcha

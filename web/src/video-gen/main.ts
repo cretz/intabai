@@ -290,10 +290,11 @@ async function onGenerate(): Promise<void> {
       prompt,
       seed,
       transformerPrecision: model.transformerPrecision,
-      textEncoderPrecision:
-        new URLSearchParams(location.search).get("textencoderfp16") === "1"
-          ? "fp16"
-          : "q4f16",
+      // Text encoder precision must match the bundle's download list.
+      // fastwanAllFiles(precision, ...) only downloads layers in the
+      // matching precision, so reading a different precision here would
+      // always cache-miss.
+      textEncoderPrecision: model.transformerPrecision,
       resolution: model.resolution,
       signal: currentAbort.signal,
       onPreview: (frames) => {
