@@ -115,3 +115,16 @@ export function f16ToF32Array(src: Uint16Array): Float32Array {
   for (let i = 0; i < src.length; i++) out[i] = f16BitsToF32(src[i]);
   return out;
 }
+
+/** Copy fp16 bit patterns out of an ORT tensor's `.data` into a fresh
+ *  Uint16Array. Handles both the legacy Uint16Array representation and the
+ *  native Float16Array representation that ORT-web returns on modern
+ *  browsers (Chrome 147+). Constructing `new Uint16Array(float16Array)`
+ *  does a numeric round-trip (half-float values to uint16 integers) and
+ *  destroys the bits, which looks like -Inf/NaN when reinterpreted as fp16.
+ *  Diagnosed 2026-04-18 - this bug caused text encoder layer_00 to appear
+ *  to output -Inf/NaN while the underlying math was correct. */
+export function copyF16Bits(data: ArrayBufferView): Uint16Array {
+  const { buffer, byteOffset, byteLength } = data;
+  return new Uint16Array(buffer.slice(byteOffset, byteOffset + byteLength));
+}

@@ -5,18 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>video face swap - intabai</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <script>
-      // No-flash theme apply: read stored preference before style.css
-      // loads so we never paint the wrong background. See src/shared/theme.ts.
-      (function () {
-        try {
-          var v = localStorage.getItem("intabai:theme");
-          if (v === "light" || v === "dark") {
-            document.documentElement.style.colorScheme = v;
-          }
-        } catch (e) {}
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
     <link rel="stylesheet" href="/style.css" />
     <style>
       .field {

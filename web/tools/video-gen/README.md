@@ -1,0 +1,224 @@
+# video-gen
+
+Live at [intabai.dev/tools/video-gen/](https://intabai.dev/tools/video-gen/).
+
+In-browser text-to-video generation. Model downloads once into your
+browser (OPFS) and runs locally on WebGPU via onnxruntime-web. Nothing
+leaves your tab.
+
+## Status: experimental, known quality issues
+
+The current FastWan pipeline produces coherent but **blocky output that
+does not match the reference HF Space** at the same prompt. We can
+generate a 5-second clip end-to-end on desktop WebGPU, but the result
+is below what the model is capable of. Investigation is paused; see
+"Known issues" in the advanced section. If you want a working in-tab
+gen tool today, use [image-gen](../image-gen/) instead.
+
+## Models
+
+[FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers](https://huggingface.co/FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers) - DMD-distilled Wan 2.2 TI2V-5B, 4 UniPC steps at flow_shift=8 (matching [KingNish/wan2-2-fast](https://huggingface.co/spaces/KingNish/wan2-2-fast)), 81 frames @ 16 fps = 5s clips. Sharded + quantized ONNX bundles will live at `cretz/FastWan2.2-TI2V-5B-ONNX` (not yet uploaded). Four bundles ship: 480×480 and 576×576, each in q4f16 (mobile + desktop, ~6.5 GB) and fp16 transformer (desktop only, ~9.4 GB extra, ~25% faster per step). Shared across all four: UMT5-XXL q4f16 text encoder + LightTAE fp16 VAE.
+
+## Features
+
+- Runs fully in-tab: no upload, no server, no install
+- Model cached to OPFS after first download
+- Sequential three-stage pipeline: UMT5-XXL text encoder, 30-layer DiT
+  transformer, LightTAE VAE decoder
+- Per-layer / per-block int4 quantization keeps peak GPU residency under
+  the ~4 GB browser tab budget
+- MP4 output via WebCodecs VideoEncoder + mp4-muxer
+- Seeded deterministic generation, persisted settings, debug log
+- ETA + per-stage progress
+
+---
+
+## Advanced / implementation deep dive
+
+Everything below is for people debugging the pipeline or porting a
+different video model. Skip unless you want the gory bits.
+
+### Known issues
+
+- **480×480 output is blocky and topically off vs the HF Space at the
+  same prompt.** RNG mismatch (mulberry32 vs torch.randn) explains
+  "different content"; the blockiness is the open part. Sanity checks
+  on CPU ORT show the transformer and text encoder exports are
+  faithful, so the gap is on the WebGPU kernel side or in the VAE.
+  Forensics plan in `notes/worklog.md` "Current task".
+- **Text encoder q4f16 drifts ~47% vs PyTorch** by the time the 24
+  UMT5 layers compose. fp16 text encoder passes (max|diff|=0.002).
+  4-bit MatMulNBits is just too lossy for UMT5's 50k-magnitude
+  intermediates, even at `--accuracy-level 1`. Probable contributor
+  to "wrong content" but not blockiness.
+
+### Memory and hosting
+
+- **4 GB wasm32 linear-memory ceiling.** onnxruntime-web requests wasm
+  initial memory equal to the `.onnx.data` sidecar size before handing
+  tensors to the WebGPU EP. Any single external-data file over ~3.95 GB
+  refuses to load. Solution: per-block and per-layer shards, loaded one
+  at a time.
+- **2.1 GB embedding table exceeds WebGPU `maxBufferSize` on mobile.**
+  Solution: extract the UMT5 embedding as a raw binary, quantize it to
+  per-row int8 (2.1 GB fp16 -> 1.05 GB int8 + 0.5 MB fp16 scales), and
+  do the lookup in JS instead of ONNX.
+- **Peak GPU residency during denoising.** Thirty transformer blocks
+  cannot live on the GPU simultaneously. Solution: a double-buffer loop
+  that compiles block N+1 while block N runs, so only two block
+  sessions are resident at once (~184 MB q4 plus activations).
+
+### The `maxBufferSize` cliff (the big one)
+
+- attn1 in every block wants to materialize a Q.K^T intermediate that
+  scales as seq². At 480×832 (seq=8190) it's 3.07 GiB - larger than
+  the 2 GiB `maxBufferSize` every WebGPU device we tested reports.
+  The allocation silently short-allocates, only ~128 of 25M output
+  positions get written, and every downstream block sees garbage.
+- Solution: rewrite attn1 at export time to split Q along the sequence
+  axis into chunks, run a `MatMul + Softmax + MatMul` per chunk, and
+  `Concat`. Same math, same FLOPs, fits. The chunker takes `--seq-len`
+  and is auto-skipped when Q·K^T fits (true at 480×480 / seq=4725).
+
+### ORT-web kernel bugs we patched and ship with
+
+- **MatMulNBits at `accuracy_level=4` produces NaN** in shell_pre's
+  small q4 MatMuls, at every token position, on WebGPU only. CPU ORT
+  at both fp16 and q4 was clean. Workaround: ship shell_pre as
+  unquantized fp16 (180 MB) instead of q4 (52 MB). The full patch is
+  applied via patch-package on `npm install`.
+- **Conv3DNaive shader hardcoded f32** input/output types so fp16
+  Conv3D wouldn't compile. Patched to dtype-correct types. Needed
+  for the full AutoencoderKLWan VAE; currently dead code (LightTAE
+  is the shipping decoder), kept in the patch bundle anyway.
+- **AttentionScore fp32-accumulator rewrite.** Patched but unused at
+  runtime - FastWan transformer blocks decompose attention into
+  MatMul + Softmax + MatMul, never hitting the fused AttentionScore
+  kernel. Kept in the bundle for future models.
+
+### ORT-web kernel rewrites we tried and kept off
+
+The patch-package bundle includes scripts for two more fp32-accumulator
+rewrites that we evaluated and decided not to ship:
+
+- **MatMul packed kernel fp16 -> fp32 accumulator.** On the text
+  encoder this took error from 5-15% vs PyTorch down to 1-5 ULP. But
+  in a side-by-side at the end of a generation, removing it did not
+  visibly hurt output and may have helped slightly. The leading
+  hypothesis is that the rewrite itself has a subtle WGSL correctness
+  bug (vec promotion order, cast back, etc) - real f32 accumulators
+  are strictly better numerically, so improvement-from-removal points
+  at the rewrite, not at fp16 accumulation being correct.
+- **Softmax kernel fp16 -> fp32 accumulator.** Same story: removed
+  alongside MatMul, A/B was inconclusive. Left off.
+
+`web/scripts/ort-patches/patch-ort-matmul-fp32-acc.mjs` keeps both
+blocks commented out with restore instructions in the header. If you
+want to re-enable them, uncomment the relevant block, then from `web/`
+run `node scripts/ort-patches/patch-ort-matmul-fp32-acc.mjs && node
+scripts/ort-patches/patch-ort-conv3d-fp16.mjs && npx patch-package
+onnxruntime-web` and `rm -rf node_modules/.vite`.
+
+### Float16Array gotcha
+
+- Modern Chrome (147+) exposes native `Float16Array`, and
+  onnxruntime-web hands back fp16 tensors using it. The natural
+  `new Uint16Array(tensor.data)` *numerically converts* fp16 to uint16
+  (rounds, clamps, loses signs) instead of reinterpreting the bits,
+  silently corrupting every fp16 readback. Solution: a `copyF16Bits`
+  helper that handles the Float16Array path correctly. Now mandatory
+  for every fp16 tensor read.
+
+### Pipeline correctness
+
+- **VAE latent denormalization was missing.** Wan 2.2's VAE expects
+  `x = x * latents_std[c] + latents_mean[c]` per channel before decode.
+  Without it the decoder sees normalized-space tensors it was never
+  trained on.
+- **Flow-matching sigma was double-shifted.** The obvious formula
+  `sigma = flow_shift * s / (1 + (shift-1)*s)` applies the shift a
+  second time because the FastVideo scheduler has already baked it
+  into the timesteps. Correct formula: `sigma = t / 1000`.
+- **Scheduler had to match the HF Space exactly.** First pass with
+  plain UniPC produced bland pastel; a direct DMD x0 loop fixed that
+  but still missed the Space's quality. Settled on UniPC with flow
+  sigmas, predict_x0, flow_prediction, bh2, solver_order=2 with
+  corrector, 4 steps, flow_shift=8 (Space overrides the config's 5.0).
+- **Timestep is a 2D `[B, seq_len]` tensor**, not a scalar: every
+  token gets its own timestep for Wan 2.2 TI2V.
+- **Padded text-embed positions need to be JS-zero-filled.** Our
+  transformer blocks have no encoder_attention_mask input, so without
+  zeroing the 504 padded positions the prompt drowns in padding
+  (symptom: prompt-agnostic fabric texture).
+
+### Export-time landmines
+
+- **opset 23 `aten::rms_norm` unsupported by ONNX exporter.** Monkey-
+  patched RMSNorm to the decomposed form before tracing.
+- **UMT5 LayerNorm overflowed fp16 variance** during export traces on
+  long sequences. Patched to a fp32 decomposition for the variance
+  reduction, cast back to fp16.
+- **Accelerate's disk-offload hooks trigger an `aten::view(Tensor, int)`
+  tracer assert** during ONNX export. Switched to per-block
+  instantiation, peak export RAM went from "won't fit" to ~2 GB.
+- **`torch.onnx.export(dynamo=True)` hangs on Windows** due to Unicode
+  handling in the path resolver. Used `dynamo=False`.
+- **`pixel_shuffle` operates on 4D, not 5D** tensors, despite the VAE
+  using 5D throughout. Reshape around the call-site.
+
+### Browser / dev-server quirks
+
+- **Vite's `/@vite/client` HMR websocket still runs with
+  `server.hmr: false`**, fails to connect, and leaves `this.ws`
+  undefined. Its `sendError` then throws TypeErrors that swallow every
+  real page error. Fix: inline HMR ws-stub at the top of `<head>` in
+  tool pages.
+- **Vite dev proxy `async fs import` inside middleware loses a race**
+  with the SPA fallback. Fix: top-level `createReadStream` and
+  `statSync`.
+- **Clearing `node_modules/.vite`** is required after patching
+  `node_modules/onnxruntime-web`. Vite's dep-optimizer cache survives
+  dev server restarts.
+
+### WebGPU device lost / hung (flaky, driver-side)
+
+- Long runs occasionally fail mid-generation with
+  `AbortError: Failed to execute 'mapAsync' on 'GPUBuffer': [Device]
+  is lost` or `DXGI_ERROR_DEVICE_HUNG`. With 4-step UniPC at 30 blocks
+  per step you churn through 120 WebGPU session create/release cycles
+  per run; cumulative state pressure eventually trips the driver or
+  the Windows TDR watchdog. Not a code bug, and retrying usually
+  succeeds.
+- Mitigations, in order:
+  1. Close other GPU-using tabs and apps, restart the browser, retry.
+  2. Bump the Windows TDR timeout. `regedit` →
+     `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers`, add
+     DWORD `TdrDelay` = `10` (seconds; default 2 is aggressive for
+     the long attention dispatches we do). Reboot after.
+  3. If recurrent, reduce WebGPU session churn by keeping more blocks
+     resident (see "perf win inventory" in the worklog).
+
+### The PCIe AER rabbit hole (not our bug)
+
+- On one development laptop, ten-minute generations started BSODing
+  the machine with a WHEA fatal. Turned out to be PCIe AER corrected
+  errors on the dGPU link escalating to uncorrected under sustained
+  PCIe traffic (not a browser or code bug). Browsers are supposed to
+  make this physically impossible. Mentioned here in case anyone
+  else sees the same pattern on Arrow Lake + Blackwell laptop
+  hardware: check Event Viewer for WHEA-Logger Event 17.
+- What fixed it on the affected machine: **disable PCIe ASPM**
+  (Control Panel → Power Options → Change plan settings → Change
+  advanced power settings → PCI Express → Link State Power Management
+  → Off, both On battery and Plugged in). That stops the L0s/L1
+  power-state transitions that are the #1 source of AER corrected
+  errors on the link.
+
+## TODO
+
+- Upload quantized shards to `cretz/FastWan2.2-TI2V-5B-ONNX` and flip
+  `FASTWAN_BASE` off the local dev proxy
+- Mobile verification on flagship Android Chrome (desktop confirmed)
+- First-frame I2V (transformer supports it; UI doesn't expose it)
+- Wake lock during long generation
+- Hotkey to cancel mid-generation and free the GPU

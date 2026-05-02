@@ -13,6 +13,7 @@ dependencies = [
     "huggingface-hub",
     "accelerate>=1.0",
     "optimum[onnxruntime]",
+    "psutil",
 ]
 
 [tool.uv]

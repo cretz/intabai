@@ -1,6 +1,6 @@
 // Streaming binary patch applier for ONNX model rewrites.
 //
-// Patch JSONs are produced offline (e.g. by `scripts/patch-onnx-webgpu.py
+// Patch JSONs are produced offline (e.g. by `scripts/face-swap/patch-onnx-webgpu.py
 // diff-onnx`). Each patch is a forward-applicable list of edits sorted
 // ascending by offset (offsets reference the ORIGINAL source file). We apply
 // edits as bytes flow in from the network - no buffering of the full source -

@@ -159,7 +159,7 @@ const HYPERSWAP_DESC =
   "FaceFusion HyperSwap - high quality 256x256 face swap. 1a/1b/1c are different trained checkpoints with the same architecture and speed but different visual character - try them and pick what you like.";
 
 // inswapper_128 source-embedding mapping matrix, pre-extracted at build time
-// from the .onnx initializer (see notes/scripts/extract-inswapper-emap.py).
+// from the .onnx initializer (see web/scripts/face-swap/extract-inswapper-emap.py).
 // Same matrix is used by both fp32 and fp16 variants. Hosted as a static
 // asset under intabai/public/.
 const INSWAPPER_EMAP: ModelFile = {

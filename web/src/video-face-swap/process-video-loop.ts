@@ -86,11 +86,15 @@ export async function processVideoLoop(opts: ProcessVideoOptions): Promise<Blob>
     },
   });
 
-  // Pick AVC level based on coded area (height rounds up to multiple of 16)
+  // Pick AVC level based on coded area (height rounds up to multiple of 16).
+  // Thresholds are each level's actual MaxFS in samples; jumping past one
+  // means that level's encoder will reject the resolution.
   const codedArea = w * (Math.ceil(h / 16) * 16);
   let avcLevel = "640028"; // 4.0
-  if (codedArea > 2097152) avcLevel = "64002A"; // 4.2
-  if (codedArea > 8912896) avcLevel = "640033"; // 5.1
+  if (codedArea > 2097152) avcLevel = "64002A"; // 4.2  (max 2,228,224)
+  if (codedArea > 2228224) avcLevel = "640032"; // 5.0  (max 5,652,480)
+  if (codedArea > 5652480) avcLevel = "640033"; // 5.1  (max 9,437,184)
+  if (codedArea > 9437184) avcLevel = "640034"; // 5.2  (max 9,437,184; higher MBPS)
 
   encoder.configure({
     codec: `avc1.${avcLevel}`,

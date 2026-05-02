@@ -14,7 +14,10 @@ export interface ModelFile {
   id: string;
   name: string;
   url: string;
-  /** Approximate size for download progress UI. Not used for verification. */
+  /** Approximate size for download progress UI. Not used for verification --
+   *  several manifests round this off. Cache integrity is enforced via a
+   *  separate `{key}.ok` marker file written after a download fully completes;
+   *  see `isFileCached`. */
   sizeBytes: number;
   /**
    * Optional public source page (typically a Hugging Face repo) shown from
@@ -72,6 +75,13 @@ function cacheKey(file: ModelFile): string {
   return file.transform ? file.id + file.transform.cacheKeySuffix : file.id;
 }
 
+/** Marker file written after a successful download. Its presence is the
+ *  authoritative signal that the data file finished writing cleanly; absence
+ *  means a crash / tab-close / interrupted write left an orphan. */
+function markerKey(key: string): string {
+  return key + ".ok";
+}
+
 export interface DownloadProgress {
   fileId: string;
   fileName: string;
@@ -118,10 +128,20 @@ export class ModelCache {
     return this.dirHandle;
   }
 
+  /** Pure read: cached iff BOTH the data file and the `.ok` marker exist.
+   *  No side effects -- orphan cleanup happens at the start of `downloadFile`,
+   *  not here. Status queries must not mutate state, otherwise concurrent
+   *  callers can race against each other and against in-flight downloads. */
   async isFileCached(file: ModelFile): Promise<boolean> {
+    const dir = await this.dir();
+    const key = cacheKey(file);
     try {
-      const dir = await this.dir();
-      await dir.getFileHandle(cacheKey(file));
+      await dir.getFileHandle(key);
+    } catch {
+      return false;
+    }
+    try {
+      await dir.getFileHandle(markerKey(key));
       return true;
     } catch {
       return false;
@@ -164,17 +184,31 @@ export class ModelCache {
     concurrency = 4,
   ): Promise<void> {
     let nextIndex = 0;
+    let aborted = false;
+    let firstError: unknown = null;
     const worker = async (): Promise<void> => {
       while (true) {
+        if (aborted) return;
         const i = nextIndex++;
         if (i >= files.length) return;
         const file = files[i];
         if (await this.isFileCached(file)) continue;
-        await this.downloadFile(file, i, files.length, onProgress);
+        try {
+          await this.downloadFile(file, i, files.length, onProgress);
+        } catch (err) {
+          // First failure aborts every sibling worker so we do not leave
+          // zombie downloads racing against the next user-triggered retry.
+          if (!aborted) {
+            aborted = true;
+            firstError = err;
+          }
+          return;
+        }
       }
     };
     const workerCount = Math.max(1, Math.min(concurrency, files.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (firstError) throw firstError;
   }
 
   async downloadFile(
@@ -195,6 +229,23 @@ export class ModelCache {
 
     const dir = await this.dir();
     const key = cacheKey(file);
+    // Repair orphans (data file present, no completion marker) just before
+    // we open the writable. If a previous attempt was killed mid-stream the
+    // data file will exist but the marker will not; deleting first means the
+    // new download starts from a clean slate rather than overwriting in
+    // place. Sidecar files written by transforms are also cleaned up so a
+    // partial split-download cannot resurrect.
+    try {
+      await dir.getFileHandle(markerKey(key));
+      // Marker present -> a complete prior download exists. Nothing to do;
+      // we'll overwrite both data + marker in a moment.
+    } catch {
+      try {
+        await dir.removeEntry(key);
+      } catch {
+        /* not present */
+      }
+    }
     const handle = await dir.getFileHandle(key, { create: true });
     const writable = await handle.createWritable();
     const applier = file.transform ? file.transform.createApplier() : null;
@@ -277,8 +328,33 @@ export class ModelCache {
       } catch {
         /* ignore */
       }
+      try {
+        await dir.removeEntry(markerKey(key));
+      } catch {
+        /* ignore */
+      }
       await removeSidecars();
       throw err;
+    }
+
+    if (contentLength > 0 && loaded !== contentLength && !applier) {
+      // Server promised content-length bytes; we wrote `loaded`. A short
+      // write means the stream truncated without raising. Transformed files
+      // skip this since the applier mediates between stream and on-disk size.
+      try {
+        await dir.removeEntry(key);
+      } catch {
+        /* ignore */
+      }
+      try {
+        await dir.removeEntry(markerKey(key));
+      } catch {
+        /* ignore */
+      }
+      await removeSidecars();
+      throw new Error(
+        `Download truncated for ${file.name}: got ${loaded} bytes, content-length said ${contentLength}`,
+      );
     }
 
     if (applier?.verify) {
@@ -299,6 +375,13 @@ export class ModelCache {
         throw err;
       }
     }
+
+    // All checks passed -- write completion marker. Done last so any failure
+    // above leaves the data file orphaned without a marker, which
+    // `isFileCached` repairs on the next request.
+    const markerHandle = await dir.getFileHandle(markerKey(key), { create: true });
+    const markerStream = await markerHandle.createWritable();
+    await markerStream.close();
   }
 
   /** Load a cached file as raw bytes. Use for ONNX weights handed to ORT. */
@@ -356,7 +439,17 @@ export class ModelCache {
 
   async deleteFile(file: ModelFile): Promise<void> {
     const dir = await this.dir();
-    await dir.removeEntry(cacheKey(file));
+    const key = cacheKey(file);
+    try {
+      await dir.removeEntry(key);
+    } catch {
+      /* already gone */
+    }
+    try {
+      await dir.removeEntry(markerKey(key));
+    } catch {
+      /* already gone */
+    }
   }
 
   async deleteFiles(files: ModelFile[]): Promise<void> {
