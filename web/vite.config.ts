@@ -103,17 +103,21 @@ export default defineConfig({
     {
       name: "local-model-proxy",
       configureServer(server) {
-        server.middlewares.use("/local-models/fastwan", (req, res, next) => {
-          if (!req.url) return next();
-          const filePath = resolve(localModelsDir, "fastwan/hf-repo", req.url.replace(/^\//, ""));
-          if (!filePath.startsWith(localModelsDir)) return next();
-          if (!existsSync(filePath)) return next();
-          const stat = statSync(filePath);
-          res.setHeader("Content-Length", stat.size);
-          res.setHeader("Content-Type", "application/octet-stream");
-          res.setHeader("Access-Control-Allow-Origin", "*");
-          createReadStream(filePath).pipe(res);
-        });
+        const mount = (model: string) => {
+          server.middlewares.use(`/local-models/${model}`, (req, res, next) => {
+            if (!req.url) return next();
+            const filePath = resolve(localModelsDir, `${model}/hf-repo`, req.url.replace(/^\//, ""));
+            if (!filePath.startsWith(localModelsDir)) return next();
+            if (!existsSync(filePath)) return next();
+            const stat = statSync(filePath);
+            res.setHeader("Content-Length", stat.size);
+            res.setHeader("Content-Type", "application/octet-stream");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            createReadStream(filePath).pipe(res);
+          });
+        };
+        mount("fastwan");
+        mount("ltx");
       },
     },
   ],

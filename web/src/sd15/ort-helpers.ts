@@ -16,24 +16,37 @@ import * as ort from "onnxruntime-web";
 
 import type { ModelCache, ModelFile } from "../shared/model-cache";
 
-/** A loadable ONNX model. Either a single monolithic file, or a graph
- *  file plus an external-data sidecar. The dataPath string must match the
- *  filename the .onnx graph internally references; "weights.pb" for nmkd
- *  SD1.5 exports, "model.onnx_data" for diffusers/optimum SDXL exports. */
-export type OrtModelFile = ModelFile | { graph: ModelFile; data: ModelFile; dataPath: string };
+/** A loadable ONNX model. One of:
+ *  - monolithic single file (small ONNX with weights inline);
+ *  - graph + one external-data sidecar (`dataPath` matches the filename
+ *    the .onnx internally references, e.g. "weights.pb" for nmkd SD1.5,
+ *    "model.onnx_data" for diffusers/optimum SDXL exports);
+ *  - graph + N external-data shards (used by LTX transformer dynamo
+ *    export: each shard.bin is referenced by the graph at its own path
+ *    via the location/offset rewrite from shard_external_data.py). */
+export type OrtModelFile =
+  | ModelFile
+  | { graph: ModelFile; data: ModelFile; dataPath: string }
+  | { graph: ModelFile; shards: Array<{ file: ModelFile; pathInGraph: string }> };
 
-/** Type guard. */
-export function isExternalData(
-  m: OrtModelFile,
-): m is { graph: ModelFile; data: ModelFile; dataPath: string } {
+type SingleSidecar = { graph: ModelFile; data: ModelFile; dataPath: string };
+type ShardSidecar = { graph: ModelFile; shards: Array<{ file: ModelFile; pathInGraph: string }> };
+
+/** Type guard: any external-data layout (single sidecar or multi-shard). */
+export function isExternalData(m: OrtModelFile): m is SingleSidecar | ShardSidecar {
   return (m as { graph?: unknown }).graph !== undefined;
+}
+
+function isShardSidecar(m: SingleSidecar | ShardSidecar): m is ShardSidecar {
+  return (m as { shards?: unknown }).shards !== undefined;
 }
 
 /** Flatten an OrtModelFile to the list of underlying ModelFile entries.
  *  Used by the bundle file enumerator (modelSetFiles). */
 export function ortModelFiles(m: OrtModelFile): ModelFile[] {
-  if (isExternalData(m)) return [m.graph, m.data];
-  return [m];
+  if (!isExternalData(m)) return [m];
+  if (isShardSidecar(m)) return [m.graph, ...m.shards.map((s) => s.file)];
+  return [m.graph, m.data];
 }
 
 /**
@@ -56,11 +69,19 @@ export async function createSession(
     });
   }
 
-  // External-data layout. Stream both pieces as blob URLs (avoids copying
-  // the multi-GB sidecar through the wasm allocator) and wire them via
+  // External-data layout. Stream sidecars as blob URLs (avoids copying
+  // multi-GB files through the wasm allocator) and wire them via
   // sessionOptions.externalData.
   const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(model.graph);
-  const { url: dataUrl, revoke: revokeData } = await cache.loadFileAsBlobUrl(model.data);
+  const sidecars: Array<{ pathInGraph: string; file: ModelFile }> = isShardSidecar(model)
+    ? model.shards.map((s) => ({ pathInGraph: s.pathInGraph, file: s.file }))
+    : [{ pathInGraph: model.dataPath, file: model.data }];
+  const loaded = await Promise.all(
+    sidecars.map(async (s) => {
+      const { url, revoke } = await cache.loadFileAsBlobUrl(s.file);
+      return { path: s.pathInGraph, data: url, revoke };
+    }),
+  );
   try {
     const sessionOptions: ort.InferenceSession.SessionOptions = {
       executionProviders: providers,
@@ -73,10 +94,10 @@ export async function createSession(
       sessionOptions as unknown as {
         externalData: Array<{ path: string; data: string }>;
       }
-    ).externalData = [{ path: model.dataPath, data: dataUrl }];
+    ).externalData = loaded.map((l) => ({ path: l.path, data: l.data }));
     return await ort.InferenceSession.create(graphUrl, sessionOptions);
   } finally {
     revokeGraph();
-    revokeData();
+    for (const l of loaded) l.revoke();
   }
 }

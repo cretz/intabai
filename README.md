@@ -8,3 +8,4 @@ Live at [intabai.dev](https://intabai.dev).
 
 - [video-face-swap](web/tools/video-face-swap) - swap a face into a video
 - [image-gen](web/tools/image-gen) - text-to-image and image-to-image generation
+- [video-gen](web/tools/video-gen) - text-to-video and image-to-video generation

@@ -53,6 +53,13 @@ async function createZImageSession(
       ...extraOptions,
     });
   }
+  // zimage exports always ship as single-sidecar (graph + .onnx_data),
+  // never multi-shard. Narrow explicitly so the widened OrtModelFile
+  // union (which now also has the LTX shard form) doesn't force a
+  // shards branch here.
+  if (!("data" in model)) {
+    throw new Error("zimage createSession: multi-shard OrtModelFile not supported");
+  }
   const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(model.graph);
   const { url: dataUrl, revoke: revokeData } = await cache.loadFileAsBlobUrl(model.data);
   try {

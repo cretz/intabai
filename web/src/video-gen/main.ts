@@ -14,6 +14,7 @@ import { VideoGenModelManager } from "./model-manager";
 import { VIDEO_GEN_MODELS } from "./models";
 import { generateFastwan, type ProgressInfo } from "../fastwan/generate";
 import { encodeFramesToMp4 } from "../fastwan/encode-mp4";
+import { generateLtx } from "../ltx/generate";
 
 interface VideoGenSettings {
   debugLog: boolean;
@@ -259,7 +260,12 @@ function renderPreview(frames: ImageBitmap[], fps: number): void {
 /** Track the current result blob URL so we can revoke it on re-run. */
 let currentResultUrl: string | null = null;
 
-async function renderFinalResult(frames: ImageBitmap[], fps: number, seed: number): Promise<void> {
+async function renderFinalResult(
+  frames: ImageBitmap[],
+  fps: number,
+  seed: number,
+  onDebug?: (msg: string) => void,
+): Promise<void> {
   stopPreview();
   previewSection.style.display = "none";
 
@@ -269,6 +275,18 @@ async function renderFinalResult(frames: ImageBitmap[], fps: number, seed: numbe
   const encodeStart = performance.now();
   const blob = await encodeFramesToMp4({ frames, fps });
   const encodeMs = performance.now() - encodeStart;
+  if (onDebug) {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let h = 0 >>> 0;
+    for (let i = 0; i < buf.length; i++) {
+      h = (h ^ buf[i]) >>> 0;
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    onDebug(
+      `[v] mp4 size=${buf.length} bytes (${(buf.length / 1e6).toFixed(2)} MB) ` +
+        `hash=0x${h.toString(16).padStart(8, "0")} fps=${fps} frames=${frames.length}`,
+    );
+  }
 
   if (currentResultUrl) URL.revokeObjectURL(currentResultUrl);
   currentResultUrl = URL.createObjectURL(blob);
@@ -346,43 +364,63 @@ async function onGenerate(): Promise<void> {
 
   const runStart = performance.now();
   try {
-    if (model.backend !== "fastwan") {
-      throw new Error(`unknown backend: ${model.backend}`);
+    let result: { frames: ImageBitmap[]; fps: number; seed: number };
+    if (model.backend === "fastwan") {
+      result = await generateFastwan({
+        cache: modelManager.cache,
+        prompt,
+        seed,
+        transformerPrecision: model.transformerPrecision,
+        // Text encoder precision must match the bundle's download list.
+        // fastwanAllFiles(precision, ...) only downloads layers in the
+        // matching precision, so reading a different precision here would
+        // always cache-miss.
+        textEncoderPrecision: model.transformerPrecision,
+        resolution: model.resolution,
+        inputImage: inputImageBitmap ?? undefined,
+        signal: currentAbort.signal,
+        onPreview: (frames) => {
+          previewSection.style.display = "";
+          renderPreview(frames, 16);
+        },
+        onProgress: (info: ProgressInfo) => {
+          const elapsed = performance.now() - runStart;
+          // ETA only once we're into denoise - earlier stages are a tiny
+          // fraction of total work and extrapolating from ~4% progress
+          // after the text encoder gives a misleadingly-short estimate.
+          let eta = "";
+          if ((info.stage === "denoise" || info.stage === "vae") && info.pct > 0.05) {
+            const etaMs = (elapsed / info.pct) * (1 - info.pct);
+            eta = ` ETA ${formatDuration(etaMs)}`;
+          }
+          pv.setProgress(info.pct * 100);
+          pv.setStatus(`${info.stage}${eta}`);
+          pv.setStats(info.message);
+        },
+        onDebug,
+      });
+    } else if (model.backend === "ltx") {
+      result = await generateLtx({
+        cache: modelManager.cache,
+        prompt,
+        seed,
+        inputImage: inputImageBitmap ?? undefined,
+        signal: currentAbort.signal,
+        onPreview: (frames) => {
+          previewSection.style.display = "";
+          renderPreview(frames, 24);
+        },
+        onProgress: (info) => {
+          pv.setProgress(info.pct * 100);
+          pv.setStatus(info.stage);
+          pv.setStats(info.message);
+        },
+        onDebug,
+      });
+    } else {
+      throw new Error(`unknown backend: ${(model as { backend: string }).backend}`);
     }
-    const result = await generateFastwan({
-      cache: modelManager.cache,
-      prompt,
-      seed,
-      transformerPrecision: model.transformerPrecision,
-      // Text encoder precision must match the bundle's download list.
-      // fastwanAllFiles(precision, ...) only downloads layers in the
-      // matching precision, so reading a different precision here would
-      // always cache-miss.
-      textEncoderPrecision: model.transformerPrecision,
-      resolution: model.resolution,
-      inputImage: inputImageBitmap ?? undefined,
-      signal: currentAbort.signal,
-      onPreview: (frames) => {
-        previewSection.style.display = "";
-        renderPreview(frames, 16);
-      },
-      onProgress: (info: ProgressInfo) => {
-        const elapsed = performance.now() - runStart;
-        // ETA only once we're into denoise - earlier stages are a tiny
-        // fraction of total work and extrapolating from ~4% progress
-        // after the text encoder gives a misleadingly-short estimate.
-        let eta = "";
-        if ((info.stage === "denoise" || info.stage === "vae") && info.pct > 0.05) {
-          const etaMs = (elapsed / info.pct) * (1 - info.pct);
-          eta = ` ETA ${formatDuration(etaMs)}`;
-        }
-        pv.setProgress(info.pct * 100);
-        pv.setStatus(`${info.stage}${eta}`);
-        pv.setStats(info.message);
-      },
-      onDebug,
-    });
-    await renderFinalResult(result.frames, result.fps, result.seed);
+    await renderFinalResult(result.frames, result.fps, result.seed, onDebug);
     pv.setProgress(100);
     pv.setStatus(`done, seed ${result.seed}`);
     pv.setStats("");

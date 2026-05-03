@@ -12,8 +12,9 @@
 import type { ModelFile } from "../shared/model-cache";
 import { fastwanAllFiles, type FastwanTransformerPrecision } from "../fastwan/models";
 import type { FastwanResolution } from "../fastwan/transformer";
+import { ltxAllFiles } from "../ltx/models";
 
-export type VideoBackend = "fastwan";
+export type VideoBackend = "fastwan" | "ltx";
 
 export interface VideoModelEntry {
   id: string;
@@ -91,6 +92,30 @@ export const VIDEO_GEN_MODELS: VideoModelEntry[] = [
     resolution: 576,
     resolutionLabel: "576×576",
     clipLabel: "5 s @ 16 fps",
+  },
+  {
+    // EXPERIMENTAL, in-progress port. Currently only the transformer is
+    // wired (stage 1: session.create smoke). Text encoder + VAE +
+    // sampler land in subsequent commits. Local proxy only - the HF
+    // repo doesn't exist yet.
+    id: "ltx_video_2b_098_distilled",
+    name: "LTX-Video 2B 0.9.8 distilled (in-progress, local only)",
+    description:
+      "EXPERIMENTAL. 2B distilled DiT, 10-step multi-scale sampler, " +
+      "T5-XXL text encoder, 32x/8x VAE. Currently only the transformer " +
+      "session.create is wired - generate will halt after that. ~3.85 GB " +
+      "transformer weights (more once T5/VAE land). Local dev only.",
+    files: ltxAllFiles(),
+    backend: "ltx",
+    // FastwanResolution typing is reused here purely so the existing
+    // VideoModelEntry shape compiles; the LTX backend ignores it. The
+    // dynamo export's n_tokens dim is fully dynamic, so the runtime
+    // shape is picked at generate time, not baked into the file.
+    // Default 512×704 (portrait) matches the HF Space's default; both
+    // dims divisible by 32 as required.
+    resolution: 480,
+    resolutionLabel: "512×704 (default)",
+    clipLabel: "2 s @ 24 fps (default)",
   },
 ];
 

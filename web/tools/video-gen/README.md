@@ -214,6 +214,34 @@ onnxruntime-web` and `rm -rf node_modules/.vite`.
   power-state transitions that are the #1 source of AER corrected
   errors on the link.
 
+## Dead exploration: LTX-Video 2B 0.9.8 distilled
+
+Branch `video-gen-ltx`, abandoned 2026-05-07. The model is incompatible
+with the current ORT-web shape (fp16 weights + fp16 activations).
+Verified per-block in PyTorch: T5-XXL at fp16 produces garbage vs
+bf16 (last_hidden_state rel_mean diff = 0.74; activations hit +Inf
+around encoder block 10). HuggingFace ships a built-in Inf-clamp
+inside `T5Block.forward` whose only purpose is to keep fp16 finite -
+it does not produce *correct* output, just survivable output.
+
+Localized fp32 islands around individual ops (the same pattern that
+fixed the LTX VAE PixelNorm overflow) don't help here because the
+residual stream itself exceeds fp16 range from block 7 onward. The
+fp16 dtype boundary is the lossy point, not any particular op.
+
+The same root cause likely explains FastWan's blocky output above:
+bf16-trained models deployed under fp16 activations can't represent
+their own dynamic range. Reviving LTX (and probably fully fixing
+FastWan) requires a different inference stack: int4-quantized weights
+with `MatMulNBits`-style on-the-fly dequant and **fp32 activations**
+through T5 + transformer; fp32 weights for VAE/upscaler. ORT-web has
+the matmul piece but no Conv equivalent, and mobile GPU memory pool
+is the binding constraint. That work is out of scope here.
+
+The PixelNorm fp32 patch from this branch is the one piece that's
+real and reusable: any future Conv VAE with the same
+Pow → ReduceMean → Sqrt → Div pattern will need it.
+
 ## TODO
 
 - Upload quantized shards to `cretz/FastWan2.2-TI2V-5B-ONNX` and flip

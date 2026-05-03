@@ -1,5 +1,5 @@
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs b/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
-index 0211f2a..37abd69 100644
+index 0211f2a..6904294 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.bundle.min.mjs
 @@ -2101,7 +2101,7 @@ var best_index : i32 = 0;`,`if (${t.getByIndices("input_indices")} ${e.selectLas
@@ -16,7 +16,7 @@ index 0211f2a..37abd69 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -29,7 +29,126 @@ index 0211f2a..37abd69 100644
     }
    }`};return{name:"AttentionScore",shaderCache:{hint:`${t!==void 0};${r}`,inputDependencies:$},getRunData:()=>({outputs:A,dispatchGroup:I,programUniforms:w}),getShaderSource:P}},lo=(r,e,n,t,o,i,a,s,u,l,d=void 0,p=void 0)=>{let h=Math.min(r.outputCount,1+(a?1:0)+(s?1:0)),g=h>1?l.pastSequenceLength:0,b=g+l.kvSequenceLength,_=u&&D.size(u.dims)>0?u:void 0,I=[e,n];h>1&&a&&D.size(a.dims)>0&&I.push(a),_&&I.push(_),d&&I.push(d),p&&I.push(p);let w=r.compute(J3(h,e,n,a,_,l,g,d,p),{inputs:I,outputs:h>1?[-1,1]:[-1]})[0];r.compute(Z3(w,l.batchSize,l.numHeads,g,l.sequenceLength,b,d,p),{inputs:d&&p?[w,d,p]:[w],outputs:[]});let v=[w,t];h>1&&s&&D.size(s.dims)>0&&v.push(s),d&&v.push(d),p&&v.push(p),r.compute(Q3(h,w,t,s,l,g,d,p),{inputs:v,outputs:h>1?[0,2]:[0]})},Y3=(r,e)=>{let n=[e.batchSize,e.numHeads,e.sequenceLength,e.headSize],t=e.sequenceLength,o=e.inputHiddenSize,i=e.headSize,a=12,s={x:Math.ceil(e.headSize/a),y:Math.ceil(e.sequenceLength/a),z:e.batchSize*e.numHeads},u=[r.inputs[0],r.inputs[1],r.inputs[2]],l=[{type:12,data:t},{type:12,data:o},{type:12,data:i},{type:12,data:e.numHeads},{type:12,data:e.headSize},{type:12,data:e.hiddenSize},{type:12,data:e.hiddenSize+e.hiddenSize+e.vHiddenSize}],d=p=>{let h=F("output_q",u[0].dataType,n),g=F("output_k",u[0].dataType,n),b=F("output_v",u[0].dataType,n),_=L("input",u[0].dataType,u[0].dims),I=L("weight",u[1].dataType,u[1].dims),w=L("bias",u[2].dataType,u[2].dims),v=_.type.storage,$=[{name:"M",type:"u32"},{name:"K",type:"u32"},{name:"N",type:"u32"},{name:"num_heads",type:"u32"},{name:"head_size",type:"u32"},{name:"hidden_size",type:"u32"},{name:"ldb",type:"u32"}];return`
    const TILE_SIZE = ${a}u;
-@@ -2795,11 +2795,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2387,7 +2387,7 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+       }`).join("")}
+ `},qa=(r,e,n,t,o=!1,i)=>{let a=r[0].dims,s=r[1].dims,u=a[a.length-2],l=s[s.length-1],d=a[a.length-1],p=Pe(l),h=Pe(d),g=Pe(u),b=D.size(n)/p/g,_=r.length>2,I=t?t.slice(0,-2):n.slice(0,-2),v=[D.size(I),u,l],$=[{type:12,data:b},{type:12,data:u},{type:12,data:l},{type:12,data:d}];Jt(e,$),$.push(...U(I,a,s)),_&&$.push(...U(r[2].dims)),$.push(...U(v));let A=P=>{let C=Ma("batch_dims",r[0].dataType,I.length),R=L("a",r[0].dataType,a.length,h),x=L("b",r[1].dataType,s.length,p),B=F("output",r[0].dataType,v.length,p),G=Me(B.type.tensor),Q=Zt(e,B.type.value,G),J=[R,x],ne="";if(_){let Y=o?p:1;J.push(L("bias",r[2].dataType,r[2].dims.length,Y)),ne=`${o?`value += bias[col / ${Y}];`:`value += ${B.type.value}(bias[row + i]);`}`}let z=[{name:"output_size",type:"u32"},{name:"M",type:"u32"},{name:"N",type:"u32"},{name:"K",type:"u32"}];Qt(e,z);let W=()=>{let Y=`var a_data: ${R.type.value};`;for(let re=0;re<h;re++)Y+=`
+               let b_data${re} = b[(b_offset + (k + ${re}) * uniforms.N + col) / ${p}];`;for(let re=0;re<g;re++){Y+=`a_data = a[(a_offset + (row + ${re}) * uniforms.K + k) / ${h}];`;for(let ee=0;ee<h;ee++)Y+=`
+-            values[${re}] = fma(${x.type.value}(a_data${h===1?"":`[${ee}]`}), b_data${ee}, values[${re}]);
++            values_f32[${re}] = f32(${x.type.value}(a_data${h===1?"":`[${ee}]`})) * f32(b_data${ee}) + values_f32[${re}];
+ `}return Y};return`
+   ${P.registerUniforms(z).registerInternalVariables(C).declareVariables(...J,B)}
+   ${P.mainStart()}
+@@ -2412,10 +2412,12 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+     ${x.indicesSet("b_indices",x.rank-1,0)}
+     let b_offset = ${x.indicesToOffset("b_indices")};
+     var values: array<${B.type.value}, ${g}>;
++    var values_f32: array<f32, ${g}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${h}) {
+       ${W()}
+     }
+     for (var i = 0u; i < ${g}u; i++) {
++      values[i] = ${B.type.value}(values_f32[i]);
+       var value = values[i];
+       ${ne}
+       ${Q}
+@@ -2438,17 +2440,17 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${e===3?"":"let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`:`
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`,Oc=(r,e,n="f32",t,o=!1,i=32,a=!1,s=32)=>{let u=e[1]*r[1],l=e[0]*r[0],d=o?u:i,p=o?i:u,h=d/e[0],g=i/e[1];if(!((o&&h===4&&r[1]===4||!o&&(h===3||h===4))&&d%e[0]===0&&i%e[1]===0&&r[0]===4))throw new Error(`If transposeA ${o} is true, innerElementSize ${h} and workPerThread[1] ${r[1]} must be 4.
+       Otherwise, innerElementSize ${h} must be 3 or 4.
+   tileAWidth ${d} must be divisible by workgroupSize[0]${e[0]}. tileInner ${i} must be divisible by workgroupSize[1] ${e[1]}. colPerThread ${r[0]} must be 4.`);return`
+@@ -2477,7 +2479,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${a?`${Math.ceil(s/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${a?`i32(globalId.z) * ${s}`:"0"};
+ 
+-  var acc: array<vec4<${n}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${g};
+@@ -2512,7 +2514,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${n}>(acc[innerRow]));
+   }
+ }`},pw=(r,e)=>r?`
+             mm_Asub[inputRow][inputCol] = mm_readA(batch,
+@@ -2557,7 +2559,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${o?`mm_Asub[k][localRow + innerRow * ${e[1]}];`:`mm_Asub[localRow + innerRow * ${e[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -2567,7 +2569,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${e[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${e[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${n}(acc[innerRow][innerCol]));
+       }
+     }
+     `:`
+@@ -2615,7 +2617,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${wE(o)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -2626,7 +2628,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${n}(acc[innerRow][innerCol]));
+   }
+ }
+ `;return`
+@@ -2645,7 +2647,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${a?`${Math.ceil(s/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${a?`i32(globalId.z) * ${s}`:"0"};
+ 
+-    var acc : array<array<${n}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${I}
+   }
+ `},vE=(r,e,n,t,o=!1)=>{let[i,a,s,u]=t,l=Me(t[0].type.tensor);return`
+@@ -2788,18 +2790,18 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+         ${Y.registerUniforms(re).declareVariables(...de,V)}
+         ${me}
+         ${xE(l,B,G,Q,a,e,J[0],J[1],J[2],ce)}
+-        ${_?Oc($,v,ce,void 0,!l,x):Pc($,v,ce,void 0,!l,x,!1,void 0,s)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${P};${_};${B};${G};${Q};${C};${R};${x}`,inputDependencies:z},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:r[0].dataType}],dispatchGroup:{x:A[0],y:A[1],z:A[2]},programUniforms:ne}),getShaderSource:W}}});var TE,mw,Xa,IE,gw,SE,bw,yw,_w=N(()=>{"use strict";ue();Gn();fe();ge();wr();Ha();TE=r=>{let e=1;for(let n=0;n<r.length;n++)e*=r[n];return e},mw=r=>typeof r=="number"?[r,r,r]:r,Xa=(r,e)=>e<=1?r:r+(r-1)*(e-1),IE=(r,e,n,t=1)=>{let o=Xa(e,t);return Math.floor((r[0]*(n-1)-n+o)/2)},gw=(r,e,n,t,o)=>{o==null&&(o=IE(r,e[0],t[0]));let i=[0,0,0,n];for(let a=0;a<3;a++)r[a]+2*o>=e[a]&&(i[a]=Math.trunc((r[a]-e[a]+2*o)/t[a]+1));return i},SE=(r,e,n,t,o,i,a,s,u,l)=>{let d,p,h,g;if(r==="VALID"&&(r=0),typeof r=="number"){d={top:r,bottom:r,left:r,right:r,front:r,back:r};let b=gw([e,n,t,1],[s,u,l],1,[o,i,a],r);p=b[0],h=b[1],g=b[2]}else if(Array.isArray(r)){if(!r.every((_,I,w)=>_===w[0]))throw Error(`Unsupported padding parameter: ${r}`);d={top:r[0],bottom:r[1],left:r[2],right:r[3],front:r[4],back:r[5]};let b=gw([e,n,t,1],[s,u,l],1,[o,i,a],r[0]);p=b[0],h=b[1],g=b[2]}else if(r==="SAME_UPPER"){p=Math.ceil(e/o),h=Math.ceil(n/i),g=Math.ceil(t/a);let b=(p-1)*o+s-e,_=(h-1)*i+u-n,I=(g-1)*a+l-t,w=Math.floor(b/2),v=b-w,$=Math.floor(_/2),A=_-$,P=Math.floor(I/2),C=I-P;d={top:$,bottom:A,left:P,right:C,front:w,back:v}}else throw Error(`Unknown padding parameter: ${r}`);return{padInfo:d,outDepth:p,outHeight:h,outWidth:g}},bw=(r,e,n,t,o,i=!1,a="channelsLast")=>{let s,u,l,d,p;if(a==="channelsLast")[s,u,l,d,p]=r;else if(a==="channelsFirst")[s,p,u,l,d]=r;else throw new Error(`Unknown dataFormat ${a}`);let[h,,g,b,_]=e,[I,w,v]=mw(n),[$,A,P]=mw(t),C=Xa(g,$),R=Xa(b,A),x=Xa(_,P),{padInfo:B,outDepth:G,outHeight:Q,outWidth:J}=SE(o,u,l,d,I,w,v,C,R,x),ne=i?h*p:h,z=[0,0,0,0,0];return a==="channelsFirst"?z=[s,ne,G,Q,J]:a==="channelsLast"&&(z=[s,G,Q,J,ne]),{batchSize:s,dataFormat:a,inDepth:u,inHeight:l,inWidth:d,inChannels:p,outDepth:G,outHeight:Q,outWidth:J,outChannels:ne,padInfo:B,strideDepth:I,strideHeight:w,strideWidth:v,filterDepth:g,filterHeight:b,filterWidth:_,effectiveFilterDepth:C,effectiveFilterHeight:R,effectiveFilterWidth:x,dilationDepth:$,dilationHeight:A,dilationWidth:P,inShape:r,outShape:z,filterShape:e}},yw=(r,e,n,t,o,i)=>{let a=i==="channelsLast",s=a?r[0].dims[3]:r[0].dims[1],u=!1,l=[64,1,1],d={x:n.map((v,$)=>$)},p=[Math.ceil(TE(d.x.map(v=>n[v]))/l[0]),1,1];be("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${p}`);let h=u?a&&s%4!==0?3:4:1,g=D.size(n),b=[{type:12,data:g},{type:12,data:t},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Jt(e,b),b.push(...U(r[0].dims,r[1].dims));let _=["rank","rank"],I=r.length===3;I&&(b.push(...U(r[2].dims)),_.push("rank")),b.push(...U(n));let w=v=>{let $=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:t.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Qt(e,$);let A=u?4:1,P=Me(r[0].dataType),C=L("x",r[0].dataType,r[0].dims.length,h===3?1:h),R=L("W",r[1].dataType,r[1].dims.length,A),x=[C,R],B=F("result",r[0].dataType,n.length,A),G="";if(I){let ne=L("bias",r[2].dataType,r[2].dims.length,A);x.push(ne),G+=`
++        ${_?Oc($,v,ce,void 0,!l,x):Pc($,v,ce,void 0,!l,x,!1,void 0,s)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${P};${_};${B};${G};${Q};${C};${R};${x}`,inputDependencies:z},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:r[0].dataType}],dispatchGroup:{x:A[0],y:A[1],z:A[2]},programUniforms:ne}),getShaderSource:W}}});var TE,mw,Xa,IE,gw,SE,bw,yw,_w=N(()=>{"use strict";ue();Gn();fe();ge();wr();Ha();TE=r=>{let e=1;for(let n=0;n<r.length;n++)e*=r[n];return e},mw=r=>typeof r=="number"?[r,r,r]:r,Xa=(r,e)=>e<=1?r:r+(r-1)*(e-1),IE=(r,e,n,t=1)=>{let o=Xa(e,t);return Math.floor((r[0]*(n-1)-n+o)/2)},gw=(r,e,n,t,o)=>{o==null&&(o=IE(r,e[0],t[0]));let i=[0,0,0,n];for(let a=0;a<3;a++)r[a]+2*o>=e[a]&&(i[a]=Math.trunc((r[a]-e[a]+2*o)/t[a]+1));return i},SE=(r,e,n,t,o,i,a,s,u,l)=>{let d,p,h,g;if(r==="VALID"&&(r=0),typeof r=="number"){d={top:r,bottom:r,left:r,right:r,front:r,back:r};let b=gw([e,n,t,1],[s,u,l],1,[o,i,a],r);p=b[0],h=b[1],g=b[2]}else if(Array.isArray(r)){if(r.length!==6)throw Error(`Unsupported padding parameter: ${r}`);d={front:r[0],top:r[1],left:r[2],back:r[3],bottom:r[4],right:r[5]};p=Math.trunc((e+r[0]+r[3]-s)/o+1);h=Math.trunc((n+r[1]+r[4]-u)/i+1);g=Math.trunc((t+r[2]+r[5]-l)/a+1)}else if(r==="SAME_UPPER"){p=Math.ceil(e/o),h=Math.ceil(n/i),g=Math.ceil(t/a);let b=(p-1)*o+s-e,_=(h-1)*i+u-n,I=(g-1)*a+l-t,w=Math.floor(b/2),v=b-w,$=Math.floor(_/2),A=_-$,P=Math.floor(I/2),C=I-P;d={top:$,bottom:A,left:P,right:C,front:w,back:v}}else throw Error(`Unknown padding parameter: ${r}`);return{padInfo:d,outDepth:p,outHeight:h,outWidth:g}},bw=(r,e,n,t,o,i=!1,a="channelsLast")=>{let s,u,l,d,p;if(a==="channelsLast")[s,u,l,d,p]=r;else if(a==="channelsFirst")[s,p,u,l,d]=r;else throw new Error(`Unknown dataFormat ${a}`);let[h,,g,b,_]=e,[I,w,v]=mw(n),[$,A,P]=mw(t),C=Xa(g,$),R=Xa(b,A),x=Xa(_,P),{padInfo:B,outDepth:G,outHeight:Q,outWidth:J}=SE(o,u,l,d,I,w,v,C,R,x),ne=i?h*p:h,z=[0,0,0,0,0];return a==="channelsFirst"?z=[s,ne,G,Q,J]:a==="channelsLast"&&(z=[s,G,Q,J,ne]),{batchSize:s,dataFormat:a,inDepth:u,inHeight:l,inWidth:d,inChannels:p,outDepth:G,outHeight:Q,outWidth:J,outChannels:ne,padInfo:B,strideDepth:I,strideHeight:w,strideWidth:v,filterDepth:g,filterHeight:b,filterWidth:_,effectiveFilterDepth:C,effectiveFilterHeight:R,effectiveFilterWidth:x,dilationDepth:$,dilationHeight:A,dilationWidth:P,inShape:r,outShape:z,filterShape:e}},yw=(r,e,n,t,o,i)=>{let a=i==="channelsLast",s=a?r[0].dims[3]:r[0].dims[1],u=!1,l=[64,1,1],d={x:n.map((v,$)=>$)},p=[Math.ceil(TE(d.x.map(v=>n[v]))/l[0]),1,1];be("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${p}`);let h=u?a&&s%4!==0?3:4:1,g=D.size(n),b=[{type:12,data:g},{type:12,data:t},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Jt(e,b),b.push(...U(r[0].dims,r[1].dims));let _=["rank","rank"],I=r.length===3;I&&(b.push(...U(r[2].dims)),_.push("rank")),b.push(...U(n));let w=v=>{let $=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:t.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Qt(e,$);let A=u?4:1,P=Me(r[0].dataType),C=L("x",r[0].dataType,r[0].dims.length,h===3?1:h),R=L("W",r[1].dataType,r[1].dims.length,A),x=[C,R],B=F("result",r[0].dataType,n.length,A),G="";if(I){let ne=L("bias",r[2].dataType,r[2].dims.length,A);x.push(ne),G+=`
+         fn getBiasByOutputCoords(coords : array<u32, 5>) -> ${u?`vec4<${P}>`:P} {
+           return bias[${a?Z("coords",4,5):Z("coords",1,5)}${u?"/ 4":""}];
+         }`}let Q=ot(h,P),J=Zt(e,Q,P);return`
              ${G}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -43,7 +162,7 @@ index 0211f2a..37abd69 100644
              }
            ${v.registerUniforms($).declareVariables(...x,B)}
            ${v.mainStart()}
-@@ -2820,7 +2820,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2820,7 +2822,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -52,7 +171,7 @@ index 0211f2a..37abd69 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -2893,9 +2893,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2893,9 +2895,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                    }
                  }
                }
@@ -64,8 +183,64 @@ index 0211f2a..37abd69 100644
            }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${a};${h};${I}`,inputDependencies:_},getRunData:()=>({outputs:[{dims:n,dataType:r[0].dataType}],dispatchGroup:{x:p[0],y:p[1],z:p[2]},programUniforms:b}),getShaderSource:w}}});var ww,vw,xw=N(()=>{"use strict";ue();fe();ge();wr();ww=(r,e,n,t)=>{let o=r.length>2,i=o?"value += b[output_channel];":"",a=r[0].dims,s=r[1].dims,u=e.format==="NHWC",l=u?n[3]:n[1],d=l/e.group,p=u&&d>=4?Pe(l):1,h=D.size(n)/p,g=[{type:12,data:h},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:d}];Jt(e,g),g.push(...U(a,[s[0],s[1],s[2],s[3]/p]));let b=o?["rank","rank","rank"]:["rank","rank"];g.push(...U([n[0],n[1],n[2],n[3]/p]));let _=I=>{let w=F("output",r[0].dataType,n.length,p),v=Me(w.type.tensor),$=Zt(e,w.type.value,v),A=L("x",r[0].dataType,a.length),P=L("w",r[1].dataType,s.length,p),C=[A,P];o&&C.push(L("b",r[2].dataType,r[2].dims,p));let R=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Qt(e,R);let x=u?`
        for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
          let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
+@@ -4470,8 +4472,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           ${p.setByOffset("global_idx",h.getByIndices("input_indices"))}
+       }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${a.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:I,getRunData:()=>({outputs:[d],dispatchGroup:{x:Math.ceil(t/64)},programUniforms:_})}},px=(r,e)=>{cD(r.inputs,e);let n=dD(r.inputs,e);r.compute(fD(r.inputs,n),{inputs:[0]})},fx=r=>{let e=r.starts,n=r.ends,t=r.axes;return le({starts:e,ends:n,axes:t})}});var hD,mD,mx,gx,bx=N(()=>{"use strict";ue();fe();Je();Yn();ge();hD=r=>{if(!r||r.length!==1)throw new Error("Softmax op requires 1 input.")},mD=(r,e)=>{let n=r.inputs[0],t=n.dims,o=D.size(t),i=t.length,a=D.normalizeAxis(e.axis,i),s=a<t.length-1,u,l=[];s?(l=Array.from({length:i},(R,x)=>x),l[a]=i-1,l[i-1]=a,u=r.compute(st(n,l),{inputs:[n],outputs:[-1]})[0]):u=n;let d=u.dims,p=d[i-1],h=o/p,g=Pe(p),b=p/g,_=64;h===1&&(_=256);let I=(R,x)=>x===4?`max(max(${R}.x, ${R}.y), max(${R}.z, ${R}.w))`:x===2?`max(${R}.x, ${R}.y)`:x===3?`max(max(${R}.x, ${R}.y), ${R}.z)`:R,w=L("x",u.dataType,u.dims,g),v=F("result",u.dataType,u.dims,g),$=w.type.value,A=Me(u.dataType)==="f32"?`var threadMax = ${$}(-3.4028234663852886e+38f);`:`var threadMax = ${$}(-65504.0h);`,P=R=>`
+       var<workgroup> rowMaxShared : ${$};
+-      var<workgroup> rowSumShared : ${$};
+-      var<workgroup> threadShared : array<${$}, ${_}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${$.replace("f16","f32")}, ${_}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${$} {
+         let index = row * row_stride + col;
+@@ -4498,7 +4500,7 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${$.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -4511,15 +4513,15 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${$}(${I("threadShared[0]",g)});
++          rowMaxShared = ${$}(${$.includes("f16") ? "f16" : "f32"}(${I("threadShared[0]",g)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${$}(0.0);
++        var threadSum = ${$.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${$.replace("f16","f32")}(getValue(row, col, row_stride)) - ${$.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${$.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -4531,13 +4533,13 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${$}(${Xt("threadShared[0]",g)});
++          rowSumShared = ${Xt("threadShared[0]",g)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${$}(exp(${$.replace("f16","f32")}(getValue(row, col, row_stride)) - ${$.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${$}(0.0));
+           setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.min.mjs b/node_modules/onnxruntime-web/dist/ort.all.min.mjs
-index 631bec6..6091733 100644
+index 631bec6..5638dd1 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.min.mjs
 @@ -2096,7 +2096,7 @@ var best_index : i32 = 0;`,`if (${t.getByIndices("input_indices")} ${e.selectLas
@@ -82,7 +257,7 @@ index 631bec6..6091733 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -95,7 +270,126 @@ index 631bec6..6091733 100644
     }
    }`};return{name:"AttentionScore",shaderCache:{hint:`${t!==void 0};${r}`,inputDependencies:x},getRunData:()=>({outputs:w,dispatchGroup:y,programUniforms:g}),getShaderSource:v}},Sr=(r,e,n,t,o,i,a,s,u,l,c=void 0,d=void 0)=>{let p=Math.min(r.outputCount,1+(a?1:0)+(s?1:0)),f=p>1?l.pastSequenceLength:0,h=f+l.kvSequenceLength,m=u&&S.size(u.dims)>0?u:void 0,y=[e,n];p>1&&a&&S.size(a.dims)>0&&y.push(a),m&&y.push(m),c&&y.push(c),d&&y.push(d);let g=r.compute(w1(p,e,n,a,m,l,f,c,d),{inputs:y,outputs:p>1?[-1,1]:[-1]})[0];r.compute(x1(g,l.batchSize,l.numHeads,f,l.sequenceLength,h,c,d),{inputs:c&&d?[g,c,d]:[g],outputs:[]});let b=[g,t];p>1&&s&&S.size(s.dims)>0&&b.push(s),c&&b.push(c),d&&b.push(d),r.compute(T1(p,g,t,s,l,f,c,d),{inputs:b,outputs:p>1?[0,2]:[0]})},v1=(r,e)=>{let n=[e.batchSize,e.numHeads,e.sequenceLength,e.headSize],t=e.sequenceLength,o=e.inputHiddenSize,i=e.headSize,a=12,s={x:Math.ceil(e.headSize/a),y:Math.ceil(e.sequenceLength/a),z:e.batchSize*e.numHeads},u=[r.inputs[0],r.inputs[1],r.inputs[2]],l=[{type:12,data:t},{type:12,data:o},{type:12,data:i},{type:12,data:e.numHeads},{type:12,data:e.headSize},{type:12,data:e.hiddenSize},{type:12,data:e.hiddenSize+e.hiddenSize+e.vHiddenSize}],c=d=>{let p=C("output_q",u[0].dataType,n),f=C("output_k",u[0].dataType,n),h=C("output_v",u[0].dataType,n),m=A("input",u[0].dataType,u[0].dims),y=A("weight",u[1].dataType,u[1].dims),g=A("bias",u[2].dataType,u[2].dims),b=m.type.storage,x=[{name:"M",type:"u32"},{name:"K",type:"u32"},{name:"N",type:"u32"},{name:"num_heads",type:"u32"},{name:"head_size",type:"u32"},{name:"hidden_size",type:"u32"},{name:"ldb",type:"u32"}];return`
    const TILE_SIZE = ${a}u;
-@@ -2790,11 +2790,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2382,7 +2382,7 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+       }`).join("")}
+ `},Ki=(r,e,n,t,o=!1,i)=>{let a=r[0].dims,s=r[1].dims,u=a[a.length-2],l=s[s.length-1],c=a[a.length-1],d=he(l),p=he(c),f=he(u),h=S.size(n)/d/f,m=r.length>2,y=t?t.slice(0,-2):n.slice(0,-2),b=[S.size(y),u,l],x=[{type:12,data:h},{type:12,data:u},{type:12,data:l},{type:12,data:c}];Pt(e,x),x.push(...k(y,a,s)),m&&x.push(...k(r[2].dims)),x.push(...k(b));let w=v=>{let I=Vi("batch_dims",r[0].dataType,y.length),P=A("a",r[0].dataType,a.length,p),O=A("b",r[1].dataType,s.length,d),E=C("output",r[0].dataType,b.length,d),R=ve(E.type.tensor),q=At(e,E.type.value,R),B=[P,O],W="";if(m){let U=o?d:1;B.push(A("bias",r[2].dataType,r[2].dims.length,U)),W=`${o?`value += bias[col / ${U}];`:`value += ${E.type.value}(bias[row + i]);`}`}let ae=[{name:"output_size",type:"u32"},{name:"M",type:"u32"},{name:"N",type:"u32"},{name:"K",type:"u32"}];Ot(e,ae);let F=()=>{let U=`var a_data: ${P.type.value};`;for(let K=0;K<p;K++)U+=`
+               let b_data${K} = b[(b_offset + (k + ${K}) * uniforms.N + col) / ${d}];`;for(let K=0;K<f;K++){U+=`a_data = a[(a_offset + (row + ${K}) * uniforms.K + k) / ${p}];`;for(let Q=0;Q<p;Q++)U+=`
+-            values[${K}] = fma(${O.type.value}(a_data${p===1?"":`[${Q}]`}), b_data${Q}, values[${K}]);
++            values_f32[${K}] = f32(${O.type.value}(a_data${p===1?"":`[${Q}]`})) * f32(b_data${Q}) + values_f32[${K}];
+ `}return U};return`
+   ${v.registerUniforms(ae).registerInternalVariables(I).declareVariables(...B,E)}
+   ${v.mainStart()}
+@@ -2407,10 +2407,12 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+     ${O.indicesSet("b_indices",O.rank-1,0)}
+     let b_offset = ${O.indicesToOffset("b_indices")};
+     var values: array<${E.type.value}, ${f}>;
++    var values_f32: array<f32, ${f}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${p}) {
+       ${F()}
+     }
+     for (var i = 0u; i < ${f}u; i++) {
++      values[i] = ${E.type.value}(values_f32[i]);
+       var value = values[i];
+       ${W}
+       ${q}
+@@ -2433,17 +2435,17 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${e===3?"":"let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`:`
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`,al=(r,e,n="f32",t,o=!1,i=32,a=!1,s=32)=>{let u=e[1]*r[1],l=e[0]*r[0],c=o?u:i,d=o?i:u,p=c/e[0],f=i/e[1];if(!((o&&p===4&&r[1]===4||!o&&(p===3||p===4))&&c%e[0]===0&&i%e[1]===0&&r[0]===4))throw new Error(`If transposeA ${o} is true, innerElementSize ${p} and workPerThread[1] ${r[1]} must be 4.
+       Otherwise, innerElementSize ${p} must be 3 or 4.
+   tileAWidth ${c} must be divisible by workgroupSize[0]${e[0]}. tileInner ${i} must be divisible by workgroupSize[1] ${e[1]}. colPerThread ${r[0]} must be 4.`);return`
+@@ -2472,7 +2474,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${a?`${Math.ceil(s/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${a?`i32(globalId.z) * ${s}`:"0"};
+ 
+-  var acc: array<vec4<${n}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${f};
+@@ -2507,7 +2509,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${n}>(acc[innerRow]));
+   }
+ }`},Kb=(r,e)=>r?`
+             mm_Asub[inputRow][inputCol] = mm_readA(batch,
+@@ -2552,7 +2554,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${o?`mm_Asub[k][localRow + innerRow * ${e[1]}];`:`mm_Asub[localRow + innerRow * ${e[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -2562,7 +2564,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${e[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${e[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${n}(acc[innerRow][innerCol]));
+       }
+     }
+     `:`
+@@ -2610,7 +2612,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${W1(o)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -2621,7 +2623,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${n}(acc[innerRow][innerCol]));
+   }
+ }
+ `;return`
+@@ -2640,7 +2642,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${a?`${Math.ceil(s/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${a?`i32(globalId.z) * ${s}`:"0"};
+ 
+-    var acc : array<array<${n}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${y}
+   }
+ `},H1=(r,e,n,t,o=!1)=>{let[i,a,s,u]=t,l=ve(t[0].type.tensor);return`
+@@ -2783,18 +2785,18 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+         ${U.registerUniforms(K).declareVariables(...ee,D)}
+         ${ue}
+         ${q1(l,E,R,q,a,e,B[0],B[1],B[2],Y)}
+-        ${m?al(x,b,Y,void 0,!l,O):sl(x,b,Y,void 0,!l,O,!1,void 0,s)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${v};${m};${E};${R};${q};${I};${P};${O}`,inputDependencies:ae},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:r[0].dataType}],dispatchGroup:{x:w[0],y:w[1],z:w[2]},programUniforms:W}),getShaderSource:F}}});var j1,Jb,Ji,K1,Qb,X1,Yb,ey,ty=$(()=>{"use strict";Z();mn();ne();oe();Fn();ji();j1=r=>{let e=1;for(let n=0;n<r.length;n++)e*=r[n];return e},Jb=r=>typeof r=="number"?[r,r,r]:r,Ji=(r,e)=>e<=1?r:r+(r-1)*(e-1),K1=(r,e,n,t=1)=>{let o=Ji(e,t);return Math.floor((r[0]*(n-1)-n+o)/2)},Qb=(r,e,n,t,o)=>{o==null&&(o=K1(r,e[0],t[0]));let i=[0,0,0,n];for(let a=0;a<3;a++)r[a]+2*o>=e[a]&&(i[a]=Math.trunc((r[a]-e[a]+2*o)/t[a]+1));return i},X1=(r,e,n,t,o,i,a,s,u,l)=>{let c,d,p,f;if(r==="VALID"&&(r=0),typeof r=="number"){c={top:r,bottom:r,left:r,right:r,front:r,back:r};let h=Qb([e,n,t,1],[s,u,l],1,[o,i,a],r);d=h[0],p=h[1],f=h[2]}else if(Array.isArray(r)){if(!r.every((m,y,g)=>m===g[0]))throw Error(`Unsupported padding parameter: ${r}`);c={top:r[0],bottom:r[1],left:r[2],right:r[3],front:r[4],back:r[5]};let h=Qb([e,n,t,1],[s,u,l],1,[o,i,a],r[0]);d=h[0],p=h[1],f=h[2]}else if(r==="SAME_UPPER"){d=Math.ceil(e/o),p=Math.ceil(n/i),f=Math.ceil(t/a);let h=(d-1)*o+s-e,m=(p-1)*i+u-n,y=(f-1)*a+l-t,g=Math.floor(h/2),b=h-g,x=Math.floor(m/2),w=m-x,v=Math.floor(y/2),I=y-v;c={top:x,bottom:w,left:v,right:I,front:g,back:b}}else throw Error(`Unknown padding parameter: ${r}`);return{padInfo:c,outDepth:d,outHeight:p,outWidth:f}},Yb=(r,e,n,t,o,i=!1,a="channelsLast")=>{let s,u,l,c,d;if(a==="channelsLast")[s,u,l,c,d]=r;else if(a==="channelsFirst")[s,d,u,l,c]=r;else throw new Error(`Unknown dataFormat ${a}`);let[p,,f,h,m]=e,[y,g,b]=Jb(n),[x,w,v]=Jb(t),I=Ji(f,x),P=Ji(h,w),O=Ji(m,v),{padInfo:E,outDepth:R,outHeight:q,outWidth:B}=X1(o,u,l,c,y,g,b,I,P,O),W=i?p*d:p,ae=[0,0,0,0,0];return a==="channelsFirst"?ae=[s,W,R,q,B]:a==="channelsLast"&&(ae=[s,R,q,B,W]),{batchSize:s,dataFormat:a,inDepth:u,inHeight:l,inWidth:c,inChannels:d,outDepth:R,outHeight:q,outWidth:B,outChannels:W,padInfo:E,strideDepth:y,strideHeight:g,strideWidth:b,filterDepth:f,filterHeight:h,filterWidth:m,effectiveFilterDepth:I,effectiveFilterHeight:P,effectiveFilterWidth:O,dilationDepth:x,dilationHeight:w,dilationWidth:v,inShape:r,outShape:ae,filterShape:e}},ey=(r,e,n,t,o,i)=>{let a=i==="channelsLast",s=a?r[0].dims[3]:r[0].dims[1],u=!1,l=[64,1,1],c={x:n.map((b,x)=>x)},d=[Math.ceil(j1(c.x.map(b=>n[b]))/l[0]),1,1];ie("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${d}`);let p=u?a&&s%4!==0?3:4:1,f=S.size(n),h=[{type:12,data:f},{type:12,data:t},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Pt(e,h),h.push(...k(r[0].dims,r[1].dims));let m=["rank","rank"],y=r.length===3;y&&(h.push(...k(r[2].dims)),m.push("rank")),h.push(...k(n));let g=b=>{let x=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:t.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Ot(e,x);let w=u?4:1,v=ve(r[0].dataType),I=A("x",r[0].dataType,r[0].dims.length,p===3?1:p),P=A("W",r[1].dataType,r[1].dims.length,w),O=[I,P],E=C("result",r[0].dataType,n.length,w),R="";if(y){let W=A("bias",r[2].dataType,r[2].dims.length,w);O.push(W),R+=`
++        ${m?al(x,b,Y,void 0,!l,O):sl(x,b,Y,void 0,!l,O,!1,void 0,s)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${v};${m};${E};${R};${q};${I};${P};${O}`,inputDependencies:ae},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:r[0].dataType}],dispatchGroup:{x:w[0],y:w[1],z:w[2]},programUniforms:W}),getShaderSource:F}}});var j1,Jb,Ji,K1,Qb,X1,Yb,ey,ty=$(()=>{"use strict";Z();mn();ne();oe();Fn();ji();j1=r=>{let e=1;for(let n=0;n<r.length;n++)e*=r[n];return e},Jb=r=>typeof r=="number"?[r,r,r]:r,Ji=(r,e)=>e<=1?r:r+(r-1)*(e-1),K1=(r,e,n,t=1)=>{let o=Ji(e,t);return Math.floor((r[0]*(n-1)-n+o)/2)},Qb=(r,e,n,t,o)=>{o==null&&(o=K1(r,e[0],t[0]));let i=[0,0,0,n];for(let a=0;a<3;a++)r[a]+2*o>=e[a]&&(i[a]=Math.trunc((r[a]-e[a]+2*o)/t[a]+1));return i},X1=(r,e,n,t,o,i,a,s,u,l)=>{let c,d,p,f;if(r==="VALID"&&(r=0),typeof r=="number"){c={top:r,bottom:r,left:r,right:r,front:r,back:r};let h=Qb([e,n,t,1],[s,u,l],1,[o,i,a],r);d=h[0],p=h[1],f=h[2]}else if(Array.isArray(r)){if(r.length!==6)throw Error(`Unsupported padding parameter: ${r}`);c={front:r[0],top:r[1],left:r[2],back:r[3],bottom:r[4],right:r[5]};d=Math.trunc((e+r[0]+r[3]-s)/o+1);p=Math.trunc((n+r[1]+r[4]-u)/i+1);f=Math.trunc((t+r[2]+r[5]-l)/a+1)}else if(r==="SAME_UPPER"){d=Math.ceil(e/o),p=Math.ceil(n/i),f=Math.ceil(t/a);let h=(d-1)*o+s-e,m=(p-1)*i+u-n,y=(f-1)*a+l-t,g=Math.floor(h/2),b=h-g,x=Math.floor(m/2),w=m-x,v=Math.floor(y/2),I=y-v;c={top:x,bottom:w,left:v,right:I,front:g,back:b}}else throw Error(`Unknown padding parameter: ${r}`);return{padInfo:c,outDepth:d,outHeight:p,outWidth:f}},Yb=(r,e,n,t,o,i=!1,a="channelsLast")=>{let s,u,l,c,d;if(a==="channelsLast")[s,u,l,c,d]=r;else if(a==="channelsFirst")[s,d,u,l,c]=r;else throw new Error(`Unknown dataFormat ${a}`);let[p,,f,h,m]=e,[y,g,b]=Jb(n),[x,w,v]=Jb(t),I=Ji(f,x),P=Ji(h,w),O=Ji(m,v),{padInfo:E,outDepth:R,outHeight:q,outWidth:B}=X1(o,u,l,c,y,g,b,I,P,O),W=i?p*d:p,ae=[0,0,0,0,0];return a==="channelsFirst"?ae=[s,W,R,q,B]:a==="channelsLast"&&(ae=[s,R,q,B,W]),{batchSize:s,dataFormat:a,inDepth:u,inHeight:l,inWidth:c,inChannels:d,outDepth:R,outHeight:q,outWidth:B,outChannels:W,padInfo:E,strideDepth:y,strideHeight:g,strideWidth:b,filterDepth:f,filterHeight:h,filterWidth:m,effectiveFilterDepth:I,effectiveFilterHeight:P,effectiveFilterWidth:O,dilationDepth:x,dilationHeight:w,dilationWidth:v,inShape:r,outShape:ae,filterShape:e}},ey=(r,e,n,t,o,i)=>{let a=i==="channelsLast",s=a?r[0].dims[3]:r[0].dims[1],u=!1,l=[64,1,1],c={x:n.map((b,x)=>x)},d=[Math.ceil(j1(c.x.map(b=>n[b]))/l[0]),1,1];ie("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${d}`);let p=u?a&&s%4!==0?3:4:1,f=S.size(n),h=[{type:12,data:f},{type:12,data:t},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Pt(e,h),h.push(...k(r[0].dims,r[1].dims));let m=["rank","rank"],y=r.length===3;y&&(h.push(...k(r[2].dims)),m.push("rank")),h.push(...k(n));let g=b=>{let x=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:t.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Ot(e,x);let w=u?4:1,v=ve(r[0].dataType),I=A("x",r[0].dataType,r[0].dims.length,p===3?1:p),P=A("W",r[1].dataType,r[1].dims.length,w),O=[I,P],E=C("result",r[0].dataType,n.length,w),R="";if(y){let W=A("bias",r[2].dataType,r[2].dims.length,w);O.push(W),R+=`
+         fn getBiasByOutputCoords(coords : array<u32, 5>) -> ${u?`vec4<${v}>`:v} {
+           return bias[${a?M("coords",4,5):M("coords",1,5)}${u?"/ 4":""}];
+         }`}let q=ze(p,v),B=At(e,q,v);return`
              ${R}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -109,7 +403,7 @@ index 631bec6..6091733 100644
              }
            ${b.registerUniforms(x).declareVariables(...O,E)}
            ${b.mainStart()}
-@@ -2815,7 +2815,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2815,7 +2817,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -118,7 +412,7 @@ index 631bec6..6091733 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -2888,9 +2888,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -2888,9 +2890,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                    }
                  }
                }
@@ -130,8 +424,64 @@ index 631bec6..6091733 100644
            }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${a};${p};${y}`,inputDependencies:m},getRunData:()=>({outputs:[{dims:n,dataType:r[0].dataType}],dispatchGroup:{x:d[0],y:d[1],z:d[2]},programUniforms:h}),getShaderSource:g}}});var ny,ry,oy=$(()=>{"use strict";Z();ne();oe();Fn();ny=(r,e,n,t)=>{let o=r.length>2,i=o?"value += b[output_channel];":"",a=r[0].dims,s=r[1].dims,u=e.format==="NHWC",l=u?n[3]:n[1],c=l/e.group,d=u&&c>=4?he(l):1,p=S.size(n)/d,f=[{type:12,data:p},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:c}];Pt(e,f),f.push(...k(a,[s[0],s[1],s[2],s[3]/d]));let h=o?["rank","rank","rank"]:["rank","rank"];f.push(...k([n[0],n[1],n[2],n[3]/d]));let m=y=>{let g=C("output",r[0].dataType,n.length,d),b=ve(g.type.tensor),x=At(e,g.type.value,b),w=A("x",r[0].dataType,a.length),v=A("w",r[1].dataType,s.length,d),I=[w,v];o&&I.push(A("b",r[2].dataType,r[2].dims,d));let P=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ot(e,P);let O=u?`
        for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
          let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
+@@ -4465,8 +4467,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           ${d.setByOffset("global_idx",p.getByIndices("input_indices"))}
+       }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${a.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:y,getRunData:()=>({outputs:[c],dispatchGroup:{x:Math.ceil(t/64)},programUniforms:m})}},K_=(r,e)=>{LA(r.inputs,e);let n=RA(r.inputs,e);r.compute(zA(r.inputs,n),{inputs:[0]})},X_=r=>{let e=r.starts,n=r.ends,t=r.axes;return J({starts:e,ends:n,axes:t})}});var MA,BA,J_,Q_,Y_=$(()=>{"use strict";Z();ne();Ee();In();oe();MA=r=>{if(!r||r.length!==1)throw new Error("Softmax op requires 1 input.")},BA=(r,e)=>{let n=r.inputs[0],t=n.dims,o=S.size(t),i=t.length,a=S.normalizeAxis(e.axis,i),s=a<t.length-1,u,l=[];s?(l=Array.from({length:i},(P,O)=>O),l[a]=i-1,l[i-1]=a,u=r.compute(Fe(n,l),{inputs:[n],outputs:[-1]})[0]):u=n;let c=u.dims,d=c[i-1],p=o/d,f=he(d),h=d/f,m=64;p===1&&(m=256);let y=(P,O)=>O===4?`max(max(${P}.x, ${P}.y), max(${P}.z, ${P}.w))`:O===2?`max(${P}.x, ${P}.y)`:O===3?`max(max(${P}.x, ${P}.y), ${P}.z)`:P,g=A("x",u.dataType,u.dims,f),b=C("result",u.dataType,u.dims,f),x=g.type.value,w=ve(u.dataType)==="f32"?`var threadMax = ${x}(-3.4028234663852886e+38f);`:`var threadMax = ${x}(-65504.0h);`,v=P=>`
+       var<workgroup> rowMaxShared : ${x};
+-      var<workgroup> rowSumShared : ${x};
+-      var<workgroup> threadShared : array<${x}, ${m}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${x.replace("f16","f32")}, ${m}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${x} {
+         let index = row * row_stride + col;
+@@ -4493,7 +4495,7 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${x.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -4506,15 +4508,15 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${x}(${y("threadShared[0]",f)});
++          rowMaxShared = ${x}(${x.includes("f16") ? "f16" : "f32"}(${y("threadShared[0]",f)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${x}(0.0);
++        var threadSum = ${x.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${x.replace("f16","f32")}(getValue(row, col, row_stride)) - ${x.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${x.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -4526,13 +4528,13 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${x}(${$t("threadShared[0]",f)});
++          rowSumShared = ${$t("threadShared[0]",f)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${x}(exp(${x.replace("f16","f32")}(getValue(row, col, row_stride)) - ${x.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${x}(0.0));
+           setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.all.mjs b/node_modules/onnxruntime-web/dist/ort.all.mjs
-index 753bb4d..a2f1d43 100644
+index 753bb4d..d1d4e69 100644
 --- a/node_modules/onnxruntime-web/dist/ort.all.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.all.mjs
 @@ -28899,7 +28899,7 @@ var init_attention = __esm({
@@ -148,7 +498,7 @@ index 753bb4d..a2f1d43 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -161,7 +511,120 @@ index 753bb4d..a2f1d43 100644
     }
    }`;
        };
-@@ -31365,11 +31365,11 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -30374,7 +30374,7 @@ var init_matmul_shaders = __esm({
+             calcStr += `a_data = a[(a_offset + (row + ${i}) * uniforms.K + k) / ${aComponents}];`;
+             for (let j = 0; j < aComponents; j++) {
+               calcStr += `
+-            values[${i}] = fma(${b.type.value}(a_data${aComponents === 1 ? "" : `[${j}]`}), b_data${j}, values[${i}]);
++            values_f32[${i}] = f32(${b.type.value}(a_data${aComponents === 1 ? "" : `[${j}]`})) * f32(b_data${j}) + values_f32[${i}];
+ `;
+             }
+           }
+@@ -30404,10 +30404,12 @@ var init_matmul_shaders = __esm({
+     ${b.indicesSet("b_indices", b.rank - 1, 0)}
+     let b_offset = ${b.indicesToOffset("b_indices")};
+     var values: array<${output.type.value}, ${outputNumber}>;
++    var values_f32: array<f32, ${outputNumber}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${aComponents}) {
+       ${calcResult()}
+     }
+     for (var i = 0u; i < ${outputNumber}u; i++) {
++      values[i] = ${output.type.value}(values_f32[i]);
+       var value = values[i];
+       ${processBias}
+       ${applyActivation}
+@@ -30477,19 +30479,19 @@ var init_matmul_packed_webgpu = __esm({
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${innerElementSize === 3 ? "" : "let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${innerElementSize === 3 ? "" : "acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${innerElementSize === 3 ? "" : "acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`;
+       } else {
+         return `
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${innerElementSize === 3 ? "" : "acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${innerElementSize === 3 ? "" : "acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`;
+       }
+     };
+@@ -30531,7 +30533,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${splitK ? `${Math.ceil(splitedDimInner / tileInner)}` : "(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${splitK ? `i32(globalId.z) * ${splitedDimInner}` : "0"};
+ 
+-  var acc: array<vec4<${type}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${rowPerThreadB};
+@@ -30566,7 +30568,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${type}>(acc[innerRow]));
+   }
+ }`;
+     };
+@@ -30634,7 +30636,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${transposeA ? `mm_Asub[k][localRow + innerRow * ${workgroupSize[1]}];` : `mm_Asub[localRow + innerRow * ${workgroupSize[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -30644,7 +30646,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${workgroupSize[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${workgroupSize[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${type}(acc[innerRow][innerCol]));
+       }
+     }
+     ` : `
+@@ -30692,7 +30694,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${readDataFromSubASnippet(transposeA)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -30703,7 +30705,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${type}(acc[innerRow][innerCol]));
+   }
+ }
+ `;
+@@ -30723,7 +30725,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${splitK ? `${Math.ceil(splitedDimInner / tileInner)}` : "(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${splitK ? `i32(globalId.z) * ${splitedDimInner}` : "0"};
+ 
+-    var acc : array<array<${type}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${matmulSnippet}
+   }
+ `;
+@@ -31365,11 +31367,11 @@ var init_conv3d_naive_webgpu = __esm({
              ${declareFunctions}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -175,7 +638,7 @@ index 753bb4d..a2f1d43 100644
              }
            ${shaderHelper.registerUniforms(uniforms).declareVariables(...inputVariables, output)}
            ${shaderHelper.mainStart()}
-@@ -31390,7 +31390,7 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -31390,7 +31392,7 @@ var init_conv3d_naive_webgpu = __esm({
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -184,7 +647,7 @@ index 753bb4d..a2f1d43 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -31463,9 +31463,9 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -31463,9 +31465,9 @@ var init_conv3d_naive_webgpu = __esm({
                    }
                  }
                }
@@ -196,8 +659,64 @@ index 753bb4d..a2f1d43 100644
            }`;
        };
        return {
+@@ -37949,8 +37951,8 @@ var init_softmax2 = __esm({
+       const threadMaxDecl = tensorTypeToWsglStorageType(transposedInput.dataType) === "f32" ? `var threadMax = ${valueType}(-3.4028234663852886e+38f);` : `var threadMax = ${valueType}(-65504.0h);`;
+       const getShaderSource = (shaderHelper) => `
+       var<workgroup> rowMaxShared : ${valueType};
+-      var<workgroup> rowSumShared : ${valueType};
+-      var<workgroup> threadShared : array<${valueType}, ${WG}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${valueType.replace("f16","f32")}, ${WG}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${valueType} {
+         let index = row * row_stride + col;
+@@ -37977,7 +37979,7 @@ var init_softmax2 = __esm({
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${valueType.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -37990,15 +37992,15 @@ var init_softmax2 = __esm({
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${valueType}(${maxVector("threadShared[0]", components)});
++          rowMaxShared = ${valueType}(${valueType.includes("f16") ? "f16" : "f32"}(${maxVector("threadShared[0]", components)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${valueType}(0.0);
++        var threadSum = ${valueType.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${valueType.replace("f16","f32")}(getValue(row, col, row_stride)) - ${valueType.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${valueType.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -38010,13 +38012,13 @@ var init_softmax2 = __esm({
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${valueType}(${sumVector("threadShared[0]", components)});
++          rowSumShared = ${sumVector("threadShared[0]", components)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${valueType}(exp(${valueType.replace("f16","f32")}(getValue(row, col, row_stride)) - ${valueType.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${valueType}(0.0));
+           setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs b/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
-index 1eb0a9e..2583b61 100644
+index 1eb0a9e..bbd616b 100644
 --- a/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
 @@ -305,7 +305,7 @@ var best_index : i32 = 0;`,`if (${n.getByIndices("input_indices")} ${e.selectLas
@@ -214,7 +733,7 @@ index 1eb0a9e..2583b61 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -227,7 +746,126 @@ index 1eb0a9e..2583b61 100644
     }
    }`};return{name:"AttentionScore",shaderCache:{hint:`${n!==void 0};${t}`,inputDependencies:T},getRunData:()=>({outputs:I,dispatchGroup:S,programUniforms:x}),getShaderSource:E}},Wt=(t,e,r,n,o,i,s,u,d,c,p=void 0,m=void 0)=>{let g=Math.min(t.outputCount,1+(s?1:0)+(u?1:0)),b=g>1?c.pastSequenceLength:0,y=b+c.kvSequenceLength,w=d&&k.size(d.dims)>0?d:void 0,S=[e,r];g>1&&s&&k.size(s.dims)>0&&S.push(s),w&&S.push(w),p&&S.push(p),m&&S.push(m);let x=t.compute(bh(g,e,r,s,w,c,b,p,m),{inputs:S,outputs:g>1?[-1,1]:[-1]})[0];t.compute(yh(x,c.batchSize,c.numHeads,b,c.sequenceLength,y,p,m),{inputs:p&&m?[x,p,m]:[x],outputs:[]});let $=[x,n];g>1&&u&&k.size(u.dims)>0&&$.push(u),p&&$.push(p),m&&$.push(m),t.compute(wh(g,x,n,u,c,b,p,m),{inputs:$,outputs:g>1?[0,2]:[0]})},_h=(t,e)=>{let r=[e.batchSize,e.numHeads,e.sequenceLength,e.headSize],n=e.sequenceLength,o=e.inputHiddenSize,i=e.headSize,s=12,u={x:Math.ceil(e.headSize/s),y:Math.ceil(e.sequenceLength/s),z:e.batchSize*e.numHeads},d=[t.inputs[0],t.inputs[1],t.inputs[2]],c=[{type:12,data:n},{type:12,data:o},{type:12,data:i},{type:12,data:e.numHeads},{type:12,data:e.headSize},{type:12,data:e.hiddenSize},{type:12,data:e.hiddenSize+e.hiddenSize+e.vHiddenSize}],p=m=>{let g=R("output_q",d[0].dataType,r),b=R("output_k",d[0].dataType,r),y=R("output_v",d[0].dataType,r),w=O("input",d[0].dataType,d[0].dims),S=O("weight",d[1].dataType,d[1].dims),x=O("bias",d[2].dataType,d[2].dims),$=w.type.storage,T=[{name:"M",type:"u32"},{name:"K",type:"u32"},{name:"N",type:"u32"},{name:"num_heads",type:"u32"},{name:"head_size",type:"u32"},{name:"hidden_size",type:"u32"},{name:"ldb",type:"u32"}];return`
    const TILE_SIZE = ${s}u;
-@@ -999,11 +999,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -591,7 +591,7 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+       }`).join("")}
+ `},on=(t,e,r,n,o=!1,i)=>{let s=t[0].dims,u=t[1].dims,d=s[s.length-2],c=u[u.length-1],p=s[s.length-1],m=fe(c),g=fe(p),b=fe(d),y=k.size(r)/m/b,w=t.length>2,S=n?n.slice(0,-2):r.slice(0,-2),$=[k.size(S),d,c],T=[{type:12,data:y},{type:12,data:d},{type:12,data:c},{type:12,data:p}];Qe(e,T),T.push(...L(S,s,u)),w&&T.push(...L(t[2].dims)),T.push(...L($));let I=E=>{let A=Qr("batch_dims",t[0].dataType,S.length),z=O("a",t[0].dataType,s.length,g),v=O("b",t[1].dataType,u.length,m),M=R("output",t[0].dataType,$.length,m),N=be(M.type.tensor),K=Ze(e,M.type.value,N),q=[z,v],Q="";if(w){let j=o?m:1;q.push(O("bias",t[2].dataType,t[2].dims.length,j)),Q=`${o?`value += bias[col / ${j}];`:`value += ${M.type.value}(bias[row + i]);`}`}let D=[{name:"output_size",type:"u32"},{name:"M",type:"u32"},{name:"N",type:"u32"},{name:"K",type:"u32"}];Ye(e,D);let W=()=>{let j=`var a_data: ${z.type.value};`;for(let Y=0;Y<g;Y++)j+=`
+               let b_data${Y} = b[(b_offset + (k + ${Y}) * uniforms.N + col) / ${m}];`;for(let Y=0;Y<b;Y++){j+=`a_data = a[(a_offset + (row + ${Y}) * uniforms.K + k) / ${g}];`;for(let Z=0;Z<g;Z++)j+=`
+-            values[${Y}] = fma(${v.type.value}(a_data${g===1?"":`[${Z}]`}), b_data${Z}, values[${Y}]);
++            values_f32[${Y}] = f32(${v.type.value}(a_data${g===1?"":`[${Z}]`})) * f32(b_data${Z}) + values_f32[${Y}];
+ `}return j};return`
+   ${E.registerUniforms(D).registerInternalVariables(A).declareVariables(...q,M)}
+   ${E.mainStart()}
+@@ -616,10 +616,12 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+     ${v.indicesSet("b_indices",v.rank-1,0)}
+     let b_offset = ${v.indicesToOffset("b_indices")};
+     var values: array<${M.type.value}, ${b}>;
++    var values_f32: array<f32, ${b}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${g}) {
+       ${W()}
+     }
+     for (var i = 0u; i < ${b}u; i++) {
++      values[i] = ${M.type.value}(values_f32[i]);
+       var value = values[i];
+       ${Q}
+       ${K}
+@@ -642,17 +644,17 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${e===3?"":"let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`:`
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${e===3?"":"acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${e===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`,vo=(t,e,r="f32",n,o=!1,i=32,s=!1,u=32)=>{let d=e[1]*t[1],c=e[0]*t[0],p=o?d:i,m=o?i:d,g=p/e[0],b=i/e[1];if(!((o&&g===4&&t[1]===4||!o&&(g===3||g===4))&&p%e[0]===0&&i%e[1]===0&&t[0]===4))throw new Error(`If transposeA ${o} is true, innerElementSize ${g} and workPerThread[1] ${t[1]} must be 4.
+       Otherwise, innerElementSize ${g} must be 3 or 4.
+   tileAWidth ${p} must be divisible by workgroupSize[0]${e[0]}. tileInner ${i} must be divisible by workgroupSize[1] ${e[1]}. colPerThread ${t[0]} must be 4.`);return`
+@@ -681,7 +683,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${s?`${Math.ceil(u/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${s?`i32(globalId.z) * ${u}`:"0"};
+ 
+-  var acc: array<vec4<${r}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${b};
+@@ -716,7 +718,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${r}>(acc[innerRow]));
+   }
+ }`},Id=(t,e)=>t?`
+             mm_Asub[inputRow][inputCol] = mm_readA(batch,
+@@ -761,7 +763,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${o?`mm_Asub[k][localRow + innerRow * ${e[1]}];`:`mm_Asub[localRow + innerRow * ${e[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -771,7 +773,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${e[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${e[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${r}(acc[innerRow][innerCol]));
+       }
+     }
+     `:`
+@@ -819,7 +821,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${Lh(o)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -830,7 +832,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${r}(acc[innerRow][innerCol]));
+   }
+ }
+ `;return`
+@@ -849,7 +851,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${s?`${Math.ceil(u/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${s?`i32(globalId.z) * ${u}`:"0"};
+ 
+-    var acc : array<array<${r}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${S}
+   }
+ `},Wh=(t,e,r,n,o=!1)=>{let[i,s,u,d]=n,c=be(n[0].type.tensor);return`
+@@ -992,18 +994,18 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+         ${j.registerUniforms(Y).declareVariables(...re,U)}
+         ${ie}
+         ${Gh(c,M,N,K,s,e,q[0],q[1],q[2],te)}
+-        ${w?vo(T,$,te,void 0,!c,v):$o(T,$,te,void 0,!c,v,!1,void 0,u)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${E};${w};${M};${N};${K};${A};${z};${v}`,inputDependencies:D},getRunData:()=>({outputs:[{dims:d?d(r):r,dataType:t[0].dataType}],dispatchGroup:{x:I[0],y:I[1],z:I[2]},programUniforms:Q}),getShaderSource:W}}});var Hh,Ed,un,Fh,kd,qh,Pd,Od,zd=V(()=>{"use strict";J();nt();ne();ae();St();nn();Hh=t=>{let e=1;for(let r=0;r<t.length;r++)e*=t[r];return e},Ed=t=>typeof t=="number"?[t,t,t]:t,un=(t,e)=>e<=1?t:t+(t-1)*(e-1),Fh=(t,e,r,n=1)=>{let o=un(e,n);return Math.floor((t[0]*(r-1)-r+o)/2)},kd=(t,e,r,n,o)=>{o==null&&(o=Fh(t,e[0],n[0]));let i=[0,0,0,r];for(let s=0;s<3;s++)t[s]+2*o>=e[s]&&(i[s]=Math.trunc((t[s]-e[s]+2*o)/n[s]+1));return i},qh=(t,e,r,n,o,i,s,u,d,c)=>{let p,m,g,b;if(t==="VALID"&&(t=0),typeof t=="number"){p={top:t,bottom:t,left:t,right:t,front:t,back:t};let y=kd([e,r,n,1],[u,d,c],1,[o,i,s],t);m=y[0],g=y[1],b=y[2]}else if(Array.isArray(t)){if(!t.every((w,S,x)=>w===x[0]))throw Error(`Unsupported padding parameter: ${t}`);p={top:t[0],bottom:t[1],left:t[2],right:t[3],front:t[4],back:t[5]};let y=kd([e,r,n,1],[u,d,c],1,[o,i,s],t[0]);m=y[0],g=y[1],b=y[2]}else if(t==="SAME_UPPER"){m=Math.ceil(e/o),g=Math.ceil(r/i),b=Math.ceil(n/s);let y=(m-1)*o+u-e,w=(g-1)*i+d-r,S=(b-1)*s+c-n,x=Math.floor(y/2),$=y-x,T=Math.floor(w/2),I=w-T,E=Math.floor(S/2),A=S-E;p={top:T,bottom:I,left:E,right:A,front:x,back:$}}else throw Error(`Unknown padding parameter: ${t}`);return{padInfo:p,outDepth:m,outHeight:g,outWidth:b}},Pd=(t,e,r,n,o,i=!1,s="channelsLast")=>{let u,d,c,p,m;if(s==="channelsLast")[u,d,c,p,m]=t;else if(s==="channelsFirst")[u,m,d,c,p]=t;else throw new Error(`Unknown dataFormat ${s}`);let[g,,b,y,w]=e,[S,x,$]=Ed(r),[T,I,E]=Ed(n),A=un(b,T),z=un(y,I),v=un(w,E),{padInfo:M,outDepth:N,outHeight:K,outWidth:q}=qh(o,d,c,p,S,x,$,A,z,v),Q=i?g*m:g,D=[0,0,0,0,0];return s==="channelsFirst"?D=[u,Q,N,K,q]:s==="channelsLast"&&(D=[u,N,K,q,Q]),{batchSize:u,dataFormat:s,inDepth:d,inHeight:c,inWidth:p,inChannels:m,outDepth:N,outHeight:K,outWidth:q,outChannels:Q,padInfo:M,strideDepth:S,strideHeight:x,strideWidth:$,filterDepth:b,filterHeight:y,filterWidth:w,effectiveFilterDepth:A,effectiveFilterHeight:z,effectiveFilterWidth:v,dilationDepth:T,dilationHeight:I,dilationWidth:E,inShape:t,outShape:D,filterShape:e}},Od=(t,e,r,n,o,i)=>{let s=i==="channelsLast",u=s?t[0].dims[3]:t[0].dims[1],d=!1,c=[64,1,1],p={x:r.map(($,T)=>T)},m=[Math.ceil(Hh(p.x.map($=>r[$]))/c[0]),1,1];se("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${m}`);let g=d?s&&u%4!==0?3:4:1,b=k.size(r),y=[{type:12,data:b},{type:12,data:n},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Qe(e,y),y.push(...L(t[0].dims,t[1].dims));let w=["rank","rank"],S=t.length===3;S&&(y.push(...L(t[2].dims)),w.push("rank")),y.push(...L(r));let x=$=>{let T=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:n.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Ye(e,T);let I=d?4:1,E=be(t[0].dataType),A=O("x",t[0].dataType,t[0].dims.length,g===3?1:g),z=O("W",t[1].dataType,t[1].dims.length,I),v=[A,z],M=R("result",t[0].dataType,r.length,I),N="";if(S){let Q=O("bias",t[2].dataType,t[2].dims.length,I);v.push(Q),N+=`
++        ${w?vo(T,$,te,void 0,!c,v):$o(T,$,te,void 0,!c,v,!1,void 0,u)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${e.cacheKey};${E};${w};${M};${N};${K};${A};${z};${v}`,inputDependencies:D},getRunData:()=>({outputs:[{dims:d?d(r):r,dataType:t[0].dataType}],dispatchGroup:{x:I[0],y:I[1],z:I[2]},programUniforms:Q}),getShaderSource:W}}});var Hh,Ed,un,Fh,kd,qh,Pd,Od,zd=V(()=>{"use strict";J();nt();ne();ae();St();nn();Hh=t=>{let e=1;for(let r=0;r<t.length;r++)e*=t[r];return e},Ed=t=>typeof t=="number"?[t,t,t]:t,un=(t,e)=>e<=1?t:t+(t-1)*(e-1),Fh=(t,e,r,n=1)=>{let o=un(e,n);return Math.floor((t[0]*(r-1)-r+o)/2)},kd=(t,e,r,n,o)=>{o==null&&(o=Fh(t,e[0],n[0]));let i=[0,0,0,r];for(let s=0;s<3;s++)t[s]+2*o>=e[s]&&(i[s]=Math.trunc((t[s]-e[s]+2*o)/n[s]+1));return i},qh=(t,e,r,n,o,i,s,u,d,c)=>{let p,m,g,b;if(t==="VALID"&&(t=0),typeof t=="number"){p={top:t,bottom:t,left:t,right:t,front:t,back:t};let y=kd([e,r,n,1],[u,d,c],1,[o,i,s],t);m=y[0],g=y[1],b=y[2]}else if(Array.isArray(t)){if(t.length!==6)throw Error(`Unsupported padding parameter: ${t}`);p={front:t[0],top:t[1],left:t[2],back:t[3],bottom:t[4],right:t[5]};m=Math.trunc((e+t[0]+t[3]-u)/o+1);g=Math.trunc((r+t[1]+t[4]-d)/i+1);b=Math.trunc((n+t[2]+t[5]-c)/s+1)}else if(t==="SAME_UPPER"){m=Math.ceil(e/o),g=Math.ceil(r/i),b=Math.ceil(n/s);let y=(m-1)*o+u-e,w=(g-1)*i+d-r,S=(b-1)*s+c-n,x=Math.floor(y/2),$=y-x,T=Math.floor(w/2),I=w-T,E=Math.floor(S/2),A=S-E;p={top:T,bottom:I,left:E,right:A,front:x,back:$}}else throw Error(`Unknown padding parameter: ${t}`);return{padInfo:p,outDepth:m,outHeight:g,outWidth:b}},Pd=(t,e,r,n,o,i=!1,s="channelsLast")=>{let u,d,c,p,m;if(s==="channelsLast")[u,d,c,p,m]=t;else if(s==="channelsFirst")[u,m,d,c,p]=t;else throw new Error(`Unknown dataFormat ${s}`);let[g,,b,y,w]=e,[S,x,$]=Ed(r),[T,I,E]=Ed(n),A=un(b,T),z=un(y,I),v=un(w,E),{padInfo:M,outDepth:N,outHeight:K,outWidth:q}=qh(o,d,c,p,S,x,$,A,z,v),Q=i?g*m:g,D=[0,0,0,0,0];return s==="channelsFirst"?D=[u,Q,N,K,q]:s==="channelsLast"&&(D=[u,N,K,q,Q]),{batchSize:u,dataFormat:s,inDepth:d,inHeight:c,inWidth:p,inChannels:m,outDepth:N,outHeight:K,outWidth:q,outChannels:Q,padInfo:M,strideDepth:S,strideHeight:x,strideWidth:$,filterDepth:b,filterHeight:y,filterWidth:w,effectiveFilterDepth:A,effectiveFilterHeight:z,effectiveFilterWidth:v,dilationDepth:T,dilationHeight:I,dilationWidth:E,inShape:t,outShape:D,filterShape:e}},Od=(t,e,r,n,o,i)=>{let s=i==="channelsLast",u=s?t[0].dims[3]:t[0].dims[1],d=!1,c=[64,1,1],p={x:r.map(($,T)=>T)},m=[Math.ceil(Hh(p.x.map($=>r[$]))/c[0]),1,1];se("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${m}`);let g=d?s&&u%4!==0?3:4:1,b=k.size(r),y=[{type:12,data:b},{type:12,data:n},{type:12,data:o},{type:12,data:e.strides},{type:12,data:e.dilations}];Qe(e,y),y.push(...L(t[0].dims,t[1].dims));let w=["rank","rank"],S=t.length===3;S&&(y.push(...L(t[2].dims)),w.push("rank")),y.push(...L(r));let x=$=>{let T=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:n.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:e.strides.length},{name:"dilations",type:"u32",length:e.dilations.length}];Ye(e,T);let I=d?4:1,E=be(t[0].dataType),A=O("x",t[0].dataType,t[0].dims.length,g===3?1:g),z=O("W",t[1].dataType,t[1].dims.length,I),v=[A,z],M=R("result",t[0].dataType,r.length,I),N="";if(S){let Q=O("bias",t[2].dataType,t[2].dims.length,I);v.push(Q),N+=`
+         fn getBiasByOutputCoords(coords : array<u32, 5>) -> ${d?`vec4<${E}>`:E} {
+           return bias[${s?F("coords",4,5):F("coords",1,5)}${d?"/ 4":""}];
+         }`}let K=Ee(g,E),q=Ze(e,K,E);return`
              ${N}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -241,7 +879,7 @@ index 1eb0a9e..2583b61 100644
              }
            ${$.registerUniforms(T).declareVariables(...v,M)}
            ${$.mainStart()}
-@@ -1024,7 +1024,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -1024,7 +1026,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -250,7 +888,7 @@ index 1eb0a9e..2583b61 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -1097,9 +1097,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -1097,9 +1099,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                    }
                  }
                }
@@ -262,8 +900,64 @@ index 1eb0a9e..2583b61 100644
            }`};return{name:"Conv3DNaive",shaderCache:{hint:`${e.cacheKey};${s};${g};${S}`,inputDependencies:w},getRunData:()=>({outputs:[{dims:r,dataType:t[0].dataType}],dispatchGroup:{x:m[0],y:m[1],z:m[2]},programUniforms:y}),getShaderSource:x}}});var Dd,Bd,Md=V(()=>{"use strict";J();ne();ae();St();Dd=(t,e,r,n)=>{let o=t.length>2,i=o?"value += b[output_channel];":"",s=t[0].dims,u=t[1].dims,d=e.format==="NHWC",c=d?r[3]:r[1],p=c/e.group,m=d&&p>=4?fe(c):1,g=k.size(r)/m,b=[{type:12,data:g},{type:12,data:e.dilations},{type:12,data:[e.strides[0],e.strides[1]]},{type:12,data:[e.pads[0],e.pads[1]]},{type:12,data:p}];Qe(e,b),b.push(...L(s,[u[0],u[1],u[2],u[3]/m]));let y=o?["rank","rank","rank"]:["rank","rank"];b.push(...L([r[0],r[1],r[2],r[3]/m]));let w=S=>{let x=R("output",t[0].dataType,r.length,m),$=be(x.type.tensor),T=Ze(e,x.type.value,$),I=O("x",t[0].dataType,s.length),E=O("w",t[1].dataType,u.length,m),A=[I,E];o&&A.push(O("b",t[2].dataType,t[2].dims,m));let z=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:e.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ye(e,z);let v=d?`
        for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
          let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
+@@ -2674,8 +2676,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           ${m.setByOffset("global_idx",g.getByIndices("input_indices"))}
+       }`;return{name:"Slice",shaderCache:{hint:`${d.length}_${s.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:S,getRunData:()=>({outputs:[p],dispatchGroup:{x:Math.ceil(n/64)},programUniforms:w})}},Ic=(t,e)=>{Py(t.inputs,e);let r=Oy(t.inputs,e);t.compute(Dy(t.inputs,r),{inputs:[0]})},Cc=t=>{let e=t.starts,r=t.ends,n=t.axes;return ee({starts:e,ends:r,axes:n})}});var By,My,Ec,kc,Pc=V(()=>{"use strict";J();ne();Ie();pt();ae();By=t=>{if(!t||t.length!==1)throw new Error("Softmax op requires 1 input.")},My=(t,e)=>{let r=t.inputs[0],n=r.dims,o=k.size(n),i=n.length,s=k.normalizeAxis(e.axis,i),u=s<n.length-1,d,c=[];u?(c=Array.from({length:i},(z,v)=>v),c[s]=i-1,c[i-1]=s,d=t.compute(Oe(r,c),{inputs:[r],outputs:[-1]})[0]):d=r;let p=d.dims,m=p[i-1],g=o/m,b=fe(m),y=m/b,w=64;g===1&&(w=256);let S=(z,v)=>v===4?`max(max(${z}.x, ${z}.y), max(${z}.z, ${z}.w))`:v===2?`max(${z}.x, ${z}.y)`:v===3?`max(max(${z}.x, ${z}.y), ${z}.z)`:z,x=O("x",d.dataType,d.dims,b),$=R("result",d.dataType,d.dims,b),T=x.type.value,I=be(d.dataType)==="f32"?`var threadMax = ${T}(-3.4028234663852886e+38f);`:`var threadMax = ${T}(-65504.0h);`,E=z=>`
+       var<workgroup> rowMaxShared : ${T};
+-      var<workgroup> rowSumShared : ${T};
+-      var<workgroup> threadShared : array<${T}, ${w}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${T.replace("f16","f32")}, ${w}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${T} {
+         let index = row * row_stride + col;
+@@ -2702,7 +2704,7 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${T.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -2715,15 +2717,15 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${T}(${S("threadShared[0]",b)});
++          rowMaxShared = ${T}(${T.includes("f16") ? "f16" : "f32"}(${S("threadShared[0]",b)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${T}(0.0);
++        var threadSum = ${T.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${T.replace("f16","f32")}(getValue(row, col, row_stride)) - ${T.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${T.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -2735,13 +2737,13 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${T}(${je("threadShared[0]",b)});
++          rowSumShared = ${je("threadShared[0]",b)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${T}(exp(${T.replace("f16","f32")}(getValue(row, col, row_stride)) - ${T.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${T}(0.0));
+           setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.min.mjs b/node_modules/onnxruntime-web/dist/ort.min.mjs
-index 6c3e58a..9305291 100644
+index 6c3e58a..139c8b9 100644
 --- a/node_modules/onnxruntime-web/dist/ort.min.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.min.mjs
 @@ -300,7 +300,7 @@ var best_index : i32 = 0;`,`if (${r.getByIndices("input_indices")} ${t.selectLas
@@ -280,7 +974,7 @@ index 6c3e58a..9305291 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -293,7 +987,126 @@ index 6c3e58a..9305291 100644
     }
    }`};return{name:"AttentionScore",shaderCache:{hint:`${r!==void 0};${e}`,inputDependencies:_},getRunData:()=>({outputs:w,dispatchGroup:b,programUniforms:y}),getShaderSource:v}},ot=(e,t,n,r,o,i,s,a,u,d,l=void 0,c=void 0)=>{let p=Math.min(e.outputCount,1+(s?1:0)+(a?1:0)),f=p>1?d.pastSequenceLength:0,m=f+d.kvSequenceLength,h=u&&x.size(u.dims)>0?u:void 0,b=[t,n];p>1&&s&&x.size(s.dims)>0&&b.push(s),h&&b.push(h),l&&b.push(l),c&&b.push(c);let y=e.compute(Ld(p,t,n,s,h,d,f,l,c),{inputs:b,outputs:p>1?[-1,1]:[-1]})[0];e.compute(Nd(y,d.batchSize,d.numHeads,f,d.sequenceLength,m,l,c),{inputs:l&&c?[y,l,c]:[y],outputs:[]});let g=[y,r];p>1&&a&&x.size(a.dims)>0&&g.push(a),l&&g.push(l),c&&g.push(c),e.compute(Gd(p,y,r,a,d,f,l,c),{inputs:g,outputs:p>1?[0,2]:[0]})},Wd=(e,t)=>{let n=[t.batchSize,t.numHeads,t.sequenceLength,t.headSize],r=t.sequenceLength,o=t.inputHiddenSize,i=t.headSize,s=12,a={x:Math.ceil(t.headSize/s),y:Math.ceil(t.sequenceLength/s),z:t.batchSize*t.numHeads},u=[e.inputs[0],e.inputs[1],e.inputs[2]],d=[{type:12,data:r},{type:12,data:o},{type:12,data:i},{type:12,data:t.numHeads},{type:12,data:t.headSize},{type:12,data:t.hiddenSize},{type:12,data:t.hiddenSize+t.hiddenSize+t.vHiddenSize}],l=c=>{let p=C("output_q",u[0].dataType,n),f=C("output_k",u[0].dataType,n),m=C("output_v",u[0].dataType,n),h=S("input",u[0].dataType,u[0].dims),b=S("weight",u[1].dataType,u[1].dims),y=S("bias",u[2].dataType,u[2].dims),g=h.type.storage,_=[{name:"M",type:"u32"},{name:"K",type:"u32"},{name:"N",type:"u32"},{name:"num_heads",type:"u32"},{name:"head_size",type:"u32"},{name:"hidden_size",type:"u32"},{name:"ldb",type:"u32"}];return`
    const TILE_SIZE = ${s}u;
-@@ -994,11 +994,11 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -586,7 +586,7 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+       }`).join("")}
+ `},an=(e,t,n,r,o=!1,i)=>{let s=e[0].dims,a=e[1].dims,u=s[s.length-2],d=a[a.length-1],l=s[s.length-1],c=J(d),p=J(l),f=J(u),m=x.size(n)/c/f,h=e.length>2,b=r?r.slice(0,-2):n.slice(0,-2),g=[x.size(b),u,d],_=[{type:12,data:m},{type:12,data:u},{type:12,data:d},{type:12,data:l}];Ce(t,_),_.push(...P(b,s,a)),h&&_.push(...P(e[2].dims)),_.push(...P(g));let w=v=>{let $=Yt("batch_dims",e[0].dataType,b.length),T=S("a",e[0].dataType,s.length,p),I=S("b",e[1].dataType,a.length,c),A=C("output",e[0].dataType,g.length,c),z=re(A.type.tensor),R=Ie(t,A.type.value,z),D=[T,I],U="";if(h){let M=o?c:1;D.push(S("bias",e[2].dataType,e[2].dims.length,M)),U=`${o?`value += bias[col / ${M}];`:`value += ${A.type.value}(bias[row + i]);`}`}let Q=[{name:"output_size",type:"u32"},{name:"M",type:"u32"},{name:"N",type:"u32"},{name:"K",type:"u32"}];Ae(t,Q);let O=()=>{let M=`var a_data: ${T.type.value};`;for(let V=0;V<p;V++)M+=`
+               let b_data${V} = b[(b_offset + (k + ${V}) * uniforms.N + col) / ${c}];`;for(let V=0;V<f;V++){M+=`a_data = a[(a_offset + (row + ${V}) * uniforms.K + k) / ${p}];`;for(let W=0;W<p;W++)M+=`
+-            values[${V}] = fma(${I.type.value}(a_data${p===1?"":`[${W}]`}), b_data${W}, values[${V}]);
++            values_f32[${V}] = f32(${I.type.value}(a_data${p===1?"":`[${W}]`})) * f32(b_data${W}) + values_f32[${V}];
+ `}return M};return`
+   ${v.registerUniforms(Q).registerInternalVariables($).declareVariables(...D,A)}
+   ${v.mainStart()}
+@@ -611,10 +611,12 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+     ${I.indicesSet("b_indices",I.rank-1,0)}
+     let b_offset = ${I.indicesToOffset("b_indices")};
+     var values: array<${A.type.value}, ${f}>;
++    var values_f32: array<f32, ${f}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${p}) {
+       ${O()}
+     }
+     for (var i = 0u; i < ${f}u; i++) {
++      values[i] = ${A.type.value}(values_f32[i]);
+       var value = values[i];
+       ${U}
+       ${R}
+@@ -637,17 +639,17 @@ fn getOutputIndexFromCoords(coords : vec4<i32>) -> i32 {
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${t===3?"":"let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${t===3?"":"acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${t===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`:`
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${t===3?"":"acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${t===3?"":"acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`,Yn=(e,t,n="f32",r,o=!1,i=32,s=!1,a=32)=>{let u=t[1]*e[1],d=t[0]*e[0],l=o?u:i,c=o?i:u,p=l/t[0],f=i/t[1];if(!((o&&p===4&&e[1]===4||!o&&(p===3||p===4))&&l%t[0]===0&&i%t[1]===0&&e[0]===4))throw new Error(`If transposeA ${o} is true, innerElementSize ${p} and workPerThread[1] ${e[1]} must be 4.
+       Otherwise, innerElementSize ${p} must be 3 or 4.
+   tileAWidth ${l} must be divisible by workgroupSize[0]${t[0]}. tileInner ${i} must be divisible by workgroupSize[1] ${t[1]}. colPerThread ${e[0]} must be 4.`);return`
+@@ -676,7 +678,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${s?`${Math.ceil(a/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${s?`i32(globalId.z) * ${a}`:"0"};
+ 
+-  var acc: array<vec4<${n}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${f};
+@@ -711,7 +713,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${n}>(acc[innerRow]));
+   }
+ }`},us=(e,t)=>e?`
+             mm_Asub[inputRow][inputCol] = mm_readA(batch,
+@@ -756,7 +758,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${o?`mm_Asub[k][localRow + innerRow * ${t[1]}];`:`mm_Asub[localRow + innerRow * ${t[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -766,7 +768,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${t[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${t[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${n}(acc[innerRow][innerCol]));
+       }
+     }
+     `:`
+@@ -814,7 +816,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${ll(o)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -825,7 +827,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${n}(acc[innerRow][innerCol]));
+   }
+ }
+ `;return`
+@@ -844,7 +846,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${s?`${Math.ceil(a/i)}`:"(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${s?`i32(globalId.z) * ${a}`:"0"};
+ 
+-    var acc : array<array<${n}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${b}
+   }
+ `},cl=(e,t,n,r,o=!1)=>{let[i,s,a,u]=r,d=re(r[0].type.tensor);return`
+@@ -987,18 +989,18 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+         ${M.registerUniforms(V).declareVariables(...q,E)}
+         ${X}
+         ${pl(d,A,z,R,s,t,D[0],D[1],D[2],H)}
+-        ${h?Yn(_,g,H,void 0,!d,I):Jn(_,g,H,void 0,!d,I,!1,void 0,a)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${t.cacheKey};${v};${h};${A};${z};${R};${$};${T};${I}`,inputDependencies:Q},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:e[0].dataType}],dispatchGroup:{x:w[0],y:w[1],z:w[2]},programUniforms:U}),getShaderSource:O}}});var ml,cs,ln,fl,ps,hl,ms,fs,hs=k(()=>{"use strict";L();ke();F();j();qe();sn();ml=e=>{let t=1;for(let n=0;n<e.length;n++)t*=e[n];return t},cs=e=>typeof e=="number"?[e,e,e]:e,ln=(e,t)=>t<=1?e:e+(e-1)*(t-1),fl=(e,t,n,r=1)=>{let o=ln(t,r);return Math.floor((e[0]*(n-1)-n+o)/2)},ps=(e,t,n,r,o)=>{o==null&&(o=fl(e,t[0],r[0]));let i=[0,0,0,n];for(let s=0;s<3;s++)e[s]+2*o>=t[s]&&(i[s]=Math.trunc((e[s]-t[s]+2*o)/r[s]+1));return i},hl=(e,t,n,r,o,i,s,a,u,d)=>{let l,c,p,f;if(e==="VALID"&&(e=0),typeof e=="number"){l={top:e,bottom:e,left:e,right:e,front:e,back:e};let m=ps([t,n,r,1],[a,u,d],1,[o,i,s],e);c=m[0],p=m[1],f=m[2]}else if(Array.isArray(e)){if(!e.every((h,b,y)=>h===y[0]))throw Error(`Unsupported padding parameter: ${e}`);l={top:e[0],bottom:e[1],left:e[2],right:e[3],front:e[4],back:e[5]};let m=ps([t,n,r,1],[a,u,d],1,[o,i,s],e[0]);c=m[0],p=m[1],f=m[2]}else if(e==="SAME_UPPER"){c=Math.ceil(t/o),p=Math.ceil(n/i),f=Math.ceil(r/s);let m=(c-1)*o+a-t,h=(p-1)*i+u-n,b=(f-1)*s+d-r,y=Math.floor(m/2),g=m-y,_=Math.floor(h/2),w=h-_,v=Math.floor(b/2),$=b-v;l={top:_,bottom:w,left:v,right:$,front:y,back:g}}else throw Error(`Unknown padding parameter: ${e}`);return{padInfo:l,outDepth:c,outHeight:p,outWidth:f}},ms=(e,t,n,r,o,i=!1,s="channelsLast")=>{let a,u,d,l,c;if(s==="channelsLast")[a,u,d,l,c]=e;else if(s==="channelsFirst")[a,c,u,d,l]=e;else throw new Error(`Unknown dataFormat ${s}`);let[p,,f,m,h]=t,[b,y,g]=cs(n),[_,w,v]=cs(r),$=ln(f,_),T=ln(m,w),I=ln(h,v),{padInfo:A,outDepth:z,outHeight:R,outWidth:D}=hl(o,u,d,l,b,y,g,$,T,I),U=i?p*c:p,Q=[0,0,0,0,0];return s==="channelsFirst"?Q=[a,U,z,R,D]:s==="channelsLast"&&(Q=[a,z,R,D,U]),{batchSize:a,dataFormat:s,inDepth:u,inHeight:d,inWidth:l,inChannels:c,outDepth:z,outHeight:R,outWidth:D,outChannels:U,padInfo:A,strideDepth:b,strideHeight:y,strideWidth:g,filterDepth:f,filterHeight:m,filterWidth:h,effectiveFilterDepth:$,effectiveFilterHeight:T,effectiveFilterWidth:I,dilationDepth:_,dilationHeight:w,dilationWidth:v,inShape:e,outShape:Q,filterShape:t}},fs=(e,t,n,r,o,i)=>{let s=i==="channelsLast",a=s?e[0].dims[3]:e[0].dims[1],u=!1,d=[64,1,1],l={x:n.map((g,_)=>_)},c=[Math.ceil(ml(l.x.map(g=>n[g]))/d[0]),1,1];Z("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${c}`);let p=u?s&&a%4!==0?3:4:1,f=x.size(n),m=[{type:12,data:f},{type:12,data:r},{type:12,data:o},{type:12,data:t.strides},{type:12,data:t.dilations}];Ce(t,m),m.push(...P(e[0].dims,e[1].dims));let h=["rank","rank"],b=e.length===3;b&&(m.push(...P(e[2].dims)),h.push("rank")),m.push(...P(n));let y=g=>{let _=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:r.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:t.strides.length},{name:"dilations",type:"u32",length:t.dilations.length}];Ae(t,_);let w=u?4:1,v=re(e[0].dataType),$=S("x",e[0].dataType,e[0].dims.length,p===3?1:p),T=S("W",e[1].dataType,e[1].dims.length,w),I=[$,T],A=C("result",e[0].dataType,n.length,w),z="";if(b){let U=S("bias",e[2].dataType,e[2].dims.length,w);I.push(U),z+=`
++        ${h?Yn(_,g,H,void 0,!d,I):Jn(_,g,H,void 0,!d,I,!1,void 0,a)}`};return{name:"Conv2DMatMul",shaderCache:{hint:`${t.cacheKey};${v};${h};${A};${z};${R};${$};${T};${I}`,inputDependencies:Q},getRunData:()=>({outputs:[{dims:u?u(n):n,dataType:e[0].dataType}],dispatchGroup:{x:w[0],y:w[1],z:w[2]},programUniforms:U}),getShaderSource:O}}});var ml,cs,ln,fl,ps,hl,ms,fs,hs=k(()=>{"use strict";L();ke();F();j();qe();sn();ml=e=>{let t=1;for(let n=0;n<e.length;n++)t*=e[n];return t},cs=e=>typeof e=="number"?[e,e,e]:e,ln=(e,t)=>t<=1?e:e+(e-1)*(t-1),fl=(e,t,n,r=1)=>{let o=ln(t,r);return Math.floor((e[0]*(n-1)-n+o)/2)},ps=(e,t,n,r,o)=>{o==null&&(o=fl(e,t[0],r[0]));let i=[0,0,0,n];for(let s=0;s<3;s++)e[s]+2*o>=t[s]&&(i[s]=Math.trunc((e[s]-t[s]+2*o)/r[s]+1));return i},hl=(e,t,n,r,o,i,s,a,u,d)=>{let l,c,p,f;if(e==="VALID"&&(e=0),typeof e=="number"){l={top:e,bottom:e,left:e,right:e,front:e,back:e};let m=ps([t,n,r,1],[a,u,d],1,[o,i,s],e);c=m[0],p=m[1],f=m[2]}else if(Array.isArray(e)){if(e.length!==6)throw Error(`Unsupported padding parameter: ${e}`);l={front:e[0],top:e[1],left:e[2],back:e[3],bottom:e[4],right:e[5]};c=Math.trunc((t+e[0]+e[3]-a)/o+1);p=Math.trunc((n+e[1]+e[4]-u)/i+1);f=Math.trunc((r+e[2]+e[5]-d)/s+1)}else if(e==="SAME_UPPER"){c=Math.ceil(t/o),p=Math.ceil(n/i),f=Math.ceil(r/s);let m=(c-1)*o+a-t,h=(p-1)*i+u-n,b=(f-1)*s+d-r,y=Math.floor(m/2),g=m-y,_=Math.floor(h/2),w=h-_,v=Math.floor(b/2),$=b-v;l={top:_,bottom:w,left:v,right:$,front:y,back:g}}else throw Error(`Unknown padding parameter: ${e}`);return{padInfo:l,outDepth:c,outHeight:p,outWidth:f}},ms=(e,t,n,r,o,i=!1,s="channelsLast")=>{let a,u,d,l,c;if(s==="channelsLast")[a,u,d,l,c]=e;else if(s==="channelsFirst")[a,c,u,d,l]=e;else throw new Error(`Unknown dataFormat ${s}`);let[p,,f,m,h]=t,[b,y,g]=cs(n),[_,w,v]=cs(r),$=ln(f,_),T=ln(m,w),I=ln(h,v),{padInfo:A,outDepth:z,outHeight:R,outWidth:D}=hl(o,u,d,l,b,y,g,$,T,I),U=i?p*c:p,Q=[0,0,0,0,0];return s==="channelsFirst"?Q=[a,U,z,R,D]:s==="channelsLast"&&(Q=[a,z,R,D,U]),{batchSize:a,dataFormat:s,inDepth:u,inHeight:d,inWidth:l,inChannels:c,outDepth:z,outHeight:R,outWidth:D,outChannels:U,padInfo:A,strideDepth:b,strideHeight:y,strideWidth:g,filterDepth:f,filterHeight:m,filterWidth:h,effectiveFilterDepth:$,effectiveFilterHeight:T,effectiveFilterWidth:I,dilationDepth:_,dilationHeight:w,dilationWidth:v,inShape:e,outShape:Q,filterShape:t}},fs=(e,t,n,r,o,i)=>{let s=i==="channelsLast",a=s?e[0].dims[3]:e[0].dims[1],u=!1,d=[64,1,1],l={x:n.map((g,_)=>_)},c=[Math.ceil(ml(l.x.map(g=>n[g]))/d[0]),1,1];Z("verbose",()=>`[conv3d_naive_webgpu] dispatch = ${c}`);let p=u?s&&a%4!==0?3:4:1,f=x.size(n),m=[{type:12,data:f},{type:12,data:r},{type:12,data:o},{type:12,data:t.strides},{type:12,data:t.dilations}];Ce(t,m),m.push(...P(e[0].dims,e[1].dims));let h=["rank","rank"],b=e.length===3;b&&(m.push(...P(e[2].dims)),h.push("rank")),m.push(...P(n));let y=g=>{let _=[{name:"output_size",type:"u32"},{name:"filter_dims",type:"u32",length:r.length},{name:"pads",type:"u32",length:o.length},{name:"strides",type:"u32",length:t.strides.length},{name:"dilations",type:"u32",length:t.dilations.length}];Ae(t,_);let w=u?4:1,v=re(e[0].dataType),$=S("x",e[0].dataType,e[0].dims.length,p===3?1:p),T=S("W",e[1].dataType,e[1].dims.length,w),I=[$,T],A=C("result",e[0].dataType,n.length,w),z="";if(b){let U=S("bias",e[2].dataType,e[2].dims.length,w);I.push(U),z+=`
+         fn getBiasByOutputCoords(coords : array<u32, 5>) -> ${u?`vec4<${v}>`:v} {
+           return bias[${s?B("coords",4,5):B("coords",1,5)}${u?"/ 4":""}];
+         }`}let R=ue(p,v),D=Ie(t,R,v);return`
              ${z}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -307,7 +1120,7 @@ index 6c3e58a..9305291 100644
              }
            ${g.registerUniforms(_).declareVariables(...I,A)}
            ${g.mainStart()}
-@@ -1019,7 +1019,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -1019,7 +1021,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -316,7 +1129,7 @@ index 6c3e58a..9305291 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -1092,9 +1092,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+@@ -1092,9 +1094,9 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
                    }
                  }
                }
@@ -328,8 +1141,64 @@ index 6c3e58a..9305291 100644
            }`};return{name:"Conv3DNaive",shaderCache:{hint:`${t.cacheKey};${s};${p};${b}`,inputDependencies:h},getRunData:()=>({outputs:[{dims:n,dataType:e[0].dataType}],dispatchGroup:{x:c[0],y:c[1],z:c[2]},programUniforms:m}),getShaderSource:y}}});var gs,ys,bs=k(()=>{"use strict";L();F();j();qe();gs=(e,t,n,r)=>{let o=e.length>2,i=o?"value += b[output_channel];":"",s=e[0].dims,a=e[1].dims,u=t.format==="NHWC",d=u?n[3]:n[1],l=d/t.group,c=u&&l>=4?J(d):1,p=x.size(n)/c,f=[{type:12,data:p},{type:12,data:t.dilations},{type:12,data:[t.strides[0],t.strides[1]]},{type:12,data:[t.pads[0],t.pads[1]]},{type:12,data:l}];Ce(t,f),f.push(...P(s,[a[0],a[1],a[2],a[3]/c]));let m=o?["rank","rank","rank"]:["rank","rank"];f.push(...P([n[0],n[1],n[2],n[3]/c]));let h=b=>{let y=C("output",e[0].dataType,n.length,c),g=re(y.type.tensor),_=Ie(t,y.type.value,g),w=S("x",e[0].dataType,s.length),v=S("w",e[1].dataType,a.length,c),$=[w,v];o&&$.push(S("b",e[2].dataType,e[2].dims,c));let T=[{name:"output_size",type:"u32"},{name:"dilations",type:"u32",length:t.dilations.length},{name:"strides",type:"u32",length:2},{name:"pads",type:"u32",length:2},{name:"output_channels_per_group",type:"u32"}];Ae(t,T);let I=u?`
        for (var wHeight: u32 = 0u; wHeight < uniforms.w_shape[0]; wHeight++) {
          let xHeight = xRCCorner.x + wHeight * uniforms.dilations[0];
+@@ -2669,8 +2671,8 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           ${c.setByOffset("global_idx",p.getByIndices("input_indices"))}
+       }`;return{name:"Slice",shaderCache:{hint:`${u.length}_${s.length}_${i.length}`,inputDependencies:["rank"]},getShaderSource:b,getRunData:()=>({outputs:[l],dispatchGroup:{x:Math.ceil(r/64)},programUniforms:h})}},uu=(e,t)=>{ep(e.inputs,t);let n=tp(e.inputs,t);e.compute(rp(e.inputs,n),{inputs:[0]})},du=e=>{let t=e.starts,n=e.ends,r=e.axes;return G({starts:t,ends:n,axes:r})}});var op,ip,cu,pu,mu=k(()=>{"use strict";L();F();ie();Ue();j();op=e=>{if(!e||e.length!==1)throw new Error("Softmax op requires 1 input.")},ip=(e,t)=>{let n=e.inputs[0],r=n.dims,o=x.size(r),i=r.length,s=x.normalizeAxis(t.axis,i),a=s<r.length-1,u,d=[];a?(d=Array.from({length:i},(T,I)=>I),d[s]=i-1,d[i-1]=s,u=e.compute(pe(n,d),{inputs:[n],outputs:[-1]})[0]):u=n;let l=u.dims,c=l[i-1],p=o/c,f=J(c),m=c/f,h=64;p===1&&(h=256);let b=(T,I)=>I===4?`max(max(${T}.x, ${T}.y), max(${T}.z, ${T}.w))`:I===2?`max(${T}.x, ${T}.y)`:I===3?`max(max(${T}.x, ${T}.y), ${T}.z)`:T,y=S("x",u.dataType,u.dims,f),g=C("result",u.dataType,u.dims,f),_=y.type.value,w=re(u.dataType)==="f32"?`var threadMax = ${_}(-3.4028234663852886e+38f);`:`var threadMax = ${_}(-65504.0h);`,v=T=>`
+       var<workgroup> rowMaxShared : ${_};
+-      var<workgroup> rowSumShared : ${_};
+-      var<workgroup> threadShared : array<${_}, ${h}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${_.replace("f16","f32")}, ${h}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${_} {
+         let index = row * row_stride + col;
+@@ -2697,7 +2699,7 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${_.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -2710,15 +2712,15 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${_}(${b("threadShared[0]",f)});
++          rowMaxShared = ${_}(${_.includes("f16") ? "f16" : "f32"}(${b("threadShared[0]",f)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${_}(0.0);
++        var threadSum = ${_.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${_.replace("f16","f32")}(getValue(row, col, row_stride)) - ${_.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${_.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -2730,13 +2732,13 @@ fn calculateOutputIndex(index: u32) -> u32 {
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${_}(${Te("threadShared[0]",f)});
++          rowSumShared = ${Te("threadShared[0]",f)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${_}(exp(${_.replace("f16","f32")}(getValue(row, col, row_stride)) - ${_.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${_}(0.0));
+           setValue(row, col, row_stride, value);
 diff --git a/node_modules/onnxruntime-web/dist/ort.mjs b/node_modules/onnxruntime-web/dist/ort.mjs
-index 875e1d3..ed530bc 100644
+index 875e1d3..dfebd8c 100644
 --- a/node_modules/onnxruntime-web/dist/ort.mjs
 +++ b/node_modules/onnxruntime-web/dist/ort.mjs
 @@ -5865,7 +5865,7 @@ var init_attention = __esm({
@@ -346,7 +1215,7 @@ index 875e1d3..ed530bc 100644
       workgroupBarrier();
       for (var k: u32 = 0u; k < TILE_SIZE && w+k < total_sequence_length; k++) {
 -       value += tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x];
-+       value += f32(tileQ[TILE_SIZE * local_id.y + k] * tileV[TILE_SIZE * k + local_id.x]);
++       value += f32(tileQ[TILE_SIZE * local_id.y + k]) * f32(tileV[TILE_SIZE * k + local_id.x]);
       }
       workgroupBarrier();
     }
@@ -359,7 +1228,120 @@ index 875e1d3..ed530bc 100644
     }
    }`;
        };
-@@ -8331,11 +8331,11 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -7340,7 +7340,7 @@ var init_matmul_shaders = __esm({
+             calcStr += `a_data = a[(a_offset + (row + ${i}) * uniforms.K + k) / ${aComponents}];`;
+             for (let j = 0; j < aComponents; j++) {
+               calcStr += `
+-            values[${i}] = fma(${b.type.value}(a_data${aComponents === 1 ? "" : `[${j}]`}), b_data${j}, values[${i}]);
++            values_f32[${i}] = f32(${b.type.value}(a_data${aComponents === 1 ? "" : `[${j}]`})) * f32(b_data${j}) + values_f32[${i}];
+ `;
+             }
+           }
+@@ -7370,10 +7370,12 @@ var init_matmul_shaders = __esm({
+     ${b.indicesSet("b_indices", b.rank - 1, 0)}
+     let b_offset = ${b.indicesToOffset("b_indices")};
+     var values: array<${output.type.value}, ${outputNumber}>;
++    var values_f32: array<f32, ${outputNumber}>;
+     for (var k: u32 = 0u; k < uniforms.K; k = k + ${aComponents}) {
+       ${calcResult()}
+     }
+     for (var i = 0u; i < ${outputNumber}u; i++) {
++      values[i] = ${output.type.value}(values_f32[i]);
+       var value = values[i];
+       ${processBias}
+       ${applyActivation}
+@@ -7443,19 +7445,19 @@ var init_matmul_packed_webgpu = __esm({
+         let ACached2 = mm_Asub[k * innerElementSize + 2][localRow];
+         ${innerElementSize === 3 ? "" : "let ACached3 = mm_Asub[k * innerElementSize + 3][localRow];"}
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+-          acc[i] = BCached0 * ACached0[i] + acc[i];
+-          acc[i] = BCached1 * ACached1[i] + acc[i];
+-          acc[i] = BCached2 * ACached2[i] + acc[i];
+-          ${innerElementSize === 3 ? "" : "acc[i] = BCached3 * ACached3[i] + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached0[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached1[i]) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached2[i]) + acc[i];
++          ${innerElementSize === 3 ? "" : "acc[i] = vec4<f32>(BCached3) * f32(ACached3[i]) + acc[i];"}
+         }`;
+       } else {
+         return `
+         for (var i = 0; i < rowPerThread; i = i + 1) {
+           let ACached = mm_Asub[tileRow + i][k];
+-          acc[i] = BCached0 * ACached.x + acc[i];
+-          acc[i] = BCached1 * ACached.y + acc[i];
+-          acc[i] = BCached2 * ACached.z + acc[i];
+-          ${innerElementSize === 3 ? "" : "acc[i] = BCached3 * ACached.w + acc[i];"}
++          acc[i] = vec4<f32>(BCached0) * f32(ACached.x) + acc[i];
++          acc[i] = vec4<f32>(BCached1) * f32(ACached.y) + acc[i];
++          acc[i] = vec4<f32>(BCached2) * f32(ACached.z) + acc[i];
++          ${innerElementSize === 3 ? "" : "acc[i] = vec4<f32>(BCached3) * f32(ACached.w) + acc[i];"}
+         }`;
+       }
+     };
+@@ -7497,7 +7499,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   let num_tiles = ${splitK ? `${Math.ceil(splitedDimInner / tileInner)}` : "(uniforms.dim_inner - 1) / tileInner + 1"};
+   var kStart = ${splitK ? `i32(globalId.z) * ${splitedDimInner}` : "0"};
+ 
+-  var acc: array<vec4<${type}>, rowPerThread>;
++  var acc: array<vec4<f32>, rowPerThread>;
+ 
+   // Loop over shared dimension.
+   let tileRowB = localRow * ${rowPerThreadB};
+@@ -7532,7 +7534,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+   }
+ 
+   for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+-      mm_write(batch, globalRow + innerRow, globalCol, acc[innerRow]);
++      mm_write(batch, globalRow + innerRow, globalCol, vec4<${type}>(acc[innerRow]));
+   }
+ }`;
+     };
+@@ -7600,7 +7602,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+           let ACached = ${transposeA ? `mm_Asub[k][localRow + innerRow * ${workgroupSize[1]}];` : `mm_Asub[localRow + innerRow * ${workgroupSize[1]}][k];`}
+           for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+             acc[innerRow][innerCol] = acc[innerRow][innerCol] +
+-                ACached * BCached[innerCol];
++                f32(ACached) * f32(BCached[innerCol]);
+           }
+         }
+       }
+@@ -7610,7 +7612,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+       let gRow = globalRowStart + localRow + innerRow * ${workgroupSize[1]};
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+         let gCol = globalColStart + localCol + innerCol * ${workgroupSize[0]};
+-        mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);
++        mm_write(batch, gRow, gCol, ${type}(acc[innerRow][innerCol]));
+       }
+     }
+     ` : `
+@@ -7658,7 +7660,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+     for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+       ${readDataFromSubASnippet(transposeA)}
+       for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+-        acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];
++        acc[innerRow][innerCol] = acc[innerRow][innerCol] + f32(ACached) * f32(BCached[innerCol]);
+       }
+     }
+   }
+@@ -7669,7 +7671,7 @@ for (var t = 0; t < num_tiles; t = t + 1) {
+ for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {
+   for (var innerCol = 0; innerCol < colPerThread; innerCol = innerCol + 1) {
+     mm_write(batch, globalRow + innerRow, globalCol + innerCol,
+-        acc[innerRow][innerCol]);
++        ${type}(acc[innerRow][innerCol]));
+   }
+ }
+ `;
+@@ -7689,7 +7691,7 @@ fn main(@builtin(local_invocation_id) localId : vec3<u32>,
+     let num_tiles = ${splitK ? `${Math.ceil(splitedDimInner / tileInner)}` : "(uniforms.dim_inner - 1) / tileInner + 1"};
+     var kStart = ${splitK ? `i32(globalId.z) * ${splitedDimInner}` : "0"};
+ 
+-    var acc : array<array<${type}, colPerThread>, rowPerThread>;
++    var acc : array<array<f32, colPerThread>, rowPerThread>;
+     ${matmulSnippet}
+   }
+ `;
+@@ -8331,11 +8333,11 @@ var init_conv3d_naive_webgpu = __esm({
              ${declareFunctions}
              fn getX(d0 : u32, d1 : u32, d2 : u32, d3 : u32, d4 : u32) -> f32 {
                let aIndices = array<u32, 5>(d0, d1, d2, d3, d4);
@@ -373,7 +1355,7 @@ index 875e1d3..ed530bc 100644
              }
            ${shaderHelper.registerUniforms(uniforms).declareVariables(...inputVariables, output)}
            ${shaderHelper.mainStart()}
-@@ -8356,7 +8356,7 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -8356,7 +8358,7 @@ var init_conv3d_naive_webgpu = __esm({
                let inputDepthNearestVec4 = (xShapeU / 4) * 4;
                let inputDepthVec4Remainder = xShapeU % 4;
  
@@ -382,7 +1364,7 @@ index 875e1d3..ed530bc 100644
                for (var wF = 0u; wF < uniforms.filter_dims[0]; wF++) {
                  let xF = xFCorner + wF * uniforms.dilations[0];
                  if (xF < 0 || xF >= xShapeY) {
-@@ -8429,9 +8429,9 @@ var init_conv3d_naive_webgpu = __esm({
+@@ -8429,9 +8431,9 @@ var init_conv3d_naive_webgpu = __esm({
                    }
                  }
                }
@@ -394,3 +1376,59 @@ index 875e1d3..ed530bc 100644
            }`;
        };
        return {
+@@ -14915,8 +14917,8 @@ var init_softmax = __esm({
+       const threadMaxDecl = tensorTypeToWsglStorageType(transposedInput.dataType) === "f32" ? `var threadMax = ${valueType}(-3.4028234663852886e+38f);` : `var threadMax = ${valueType}(-65504.0h);`;
+       const getShaderSource = (shaderHelper) => `
+       var<workgroup> rowMaxShared : ${valueType};
+-      var<workgroup> rowSumShared : ${valueType};
+-      var<workgroup> threadShared : array<${valueType}, ${WG}>;
++      var<workgroup> rowSumShared : f32;
++      var<workgroup> threadShared : array<${valueType.replace("f16","f32")}, ${WG}>;
+ 
+       fn getValue(row: i32, col: i32, row_stride: i32) -> ${valueType} {
+         let index = row * row_stride + col;
+@@ -14943,7 +14945,7 @@ var init_softmax = __esm({
+           threadMax = max(threadMax, value);
+         }
+         if (lindex < cols) {
+-          threadShared[lindex] = threadMax;
++          threadShared[lindex] = ${valueType.replace("f16","f32")}(threadMax);
+         }
+         workgroupBarrier();
+ 
+@@ -14956,15 +14958,15 @@ var init_softmax = __esm({
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowMaxShared = ${valueType}(${maxVector("threadShared[0]", components)});
++          rowMaxShared = ${valueType}(${valueType.includes("f16") ? "f16" : "f32"}(${maxVector("threadShared[0]", components)}));
+         }
+         workgroupBarrier();
+ 
+         // find the rows sum
+-        var threadSum = ${valueType}(0.0);
++        var threadSum = ${valueType.replace("f16","f32")}(0.0);
+         for (var col = lindex; col < cols; col += wg) {
+-          let subExp = exp(getValue(row, col, row_stride) - rowMaxShared);
+-          threadSum += subExp;
++          let subExp = exp(${valueType.replace("f16","f32")}(getValue(row, col, row_stride)) - ${valueType.replace("f16","f32")}(rowMaxShared));
++          threadSum += ${valueType.replace("f16","f32")}(subExp);
+         }
+         threadShared[lindex] = threadSum;
+         workgroupBarrier();
+@@ -14976,13 +14978,13 @@ var init_softmax = __esm({
+           workgroupBarrier();
+         }
+         if (lindex == 0) {
+-          rowSumShared = ${valueType}(${sumVector("threadShared[0]", components)});
++          rowSumShared = ${sumVector("threadShared[0]", components)};
+         }
+         workgroupBarrier();
+ 
+         // calculate final value for each element in the row
+         for (var col = lindex; col < cols; col += wg) {
+-          var value = exp(getValue(row, col, row_stride) - rowMaxShared) / rowSumShared;
++          var value = ${valueType}(exp(${valueType.replace("f16","f32")}(getValue(row, col, row_stride)) - ${valueType.replace("f16","f32")}(rowMaxShared)) / rowSumShared);
+           // max operation protects against NaN since all values should be >=0
+           value = max(value, ${valueType}(0.0));
+           setValue(row, col, row_stride, value);

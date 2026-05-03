@@ -13,6 +13,35 @@ import { initThemeSelect } from "../shared/theme";
 import { gaussianNoise, mulberry32 } from "../image-gen/generate-utils";
 import { copyF16Bits, f16BitsToF32, f16ToF32Array, f32ToF16Array } from "../sd15/fp16";
 
+/** One-line stats for diagnosing whether a captured/output fp16 tensor is
+ *  finite, distinguishing NaN from +/-Inf (the LTX bisect on
+ *  dec_block_00_res_0 produced bothNan=243816 at conv3d but other-AI's
+ *  CPU-ORT replay showed conv3d max=+30.7, so we need to know which
+ *  category the "non-finite" actually is). */
+function statsFp16Brief(log: (s: string) => void, name: string, bits: Uint16Array): void {
+  const n = bits.length;
+  const f32 = f16ToF32Array(bits);
+  let min = Infinity, max = -Infinity, sum = 0, sumSq = 0, nan = 0, posInf = 0, negInf = 0;
+  for (let i = 0; i < n; i++) {
+    const v = f32[i];
+    if (Number.isNaN(v)) { nan++; continue; }
+    if (v === Infinity) { posInf++; continue; }
+    if (v === -Infinity) { negInf++; continue; }
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+    sumSq += v * v;
+  }
+  const finite = n - nan - posInf - negInf;
+  const mean = finite > 0 ? sum / finite : 0;
+  const variance = finite > 0 ? Math.max(0, sumSq / finite - mean * mean) : 0;
+  const std = Math.sqrt(variance);
+  log(
+    `stats[${name}] n=${n} finite=${finite} nan=${nan} +inf=${posInf} -inf=${negInf} ` +
+      `min=${min.toFixed(4)} max=${max.toFixed(4)} mean=${mean.toFixed(4)} std=${std.toFixed(4)}`,
+  );
+}
+
 function dumpFp16Tensor(log: (s: string) => void, name: string, bits: Uint16Array): void {
   const n = bits.length;
   // Stats in f32 space for sanity.
@@ -71,8 +100,12 @@ interface Component {
   /**
    * Optional external-data sidecar. When present, passed to ORT via
    * sessionOptions.externalData with the path the graph references.
+   * Use the array form for multi-shard exports (e.g. LTX transformer's
+   * 7 shard.bin files).
    */
-  externalData?: { file: ModelFile; pathInGraph: string };
+  externalData?:
+    | { file: ModelFile; pathInGraph: string }
+    | Array<{ file: ModelFile; pathInGraph: string }>;
   /**
    * Override the default "all" graph optimization level. Use "disabled" when
    * exposing intermediate graph outputs so ORT-web's memory planner doesn't
@@ -80,6 +113,22 @@ interface Component {
    * session create (Fastwan block_00_debug.onnx symptom).
    */
   graphOptLevel?: "disabled" | "basic" | "extended" | "all";
+  /**
+   * Override execution provider preference for this component. Default is
+   * the global `providers()` (webgpu first, wasm fallback). Force a single
+   * EP for wasm-vs-webgpu A/B diffs. Pair two components with the same
+   * `diffPair` value to auto-diff outputs across EPs.
+   */
+  executionProviders?: ("webgpu" | "wasm")[];
+  /**
+   * Tag pairing two components whose captured outputs should be diffed
+   * after both run. When the second component with the same diffPair tag
+   * finishes, every output named in both is compared in fp32 space and
+   * the first one with mean-relative-diff above ~5% is logged loudly. Use
+   * with `executionProviders: ["wasm"]` on one and `["webgpu"]` on the
+   * other to localise EP-specific kernel bugs to a single op.
+   */
+  diffPair?: string;
   /**
    * If set, after session.create succeeds, also try one dummy session.run
    * with zero tensors at these input shapes. This is what catches WebGPU
@@ -124,6 +173,14 @@ interface Component {
        *  e.g. decoder_init's cache_out_NN into decoder_step's cache_in_NN
        *  so the step runs against real signal rather than zeros. */
       fromPrevOutput?: string;
+      /** If set, fetch the LTXBLK26-format bundle at `url` once per run
+       *  and use the tensor named `tensorName` from it as this input.
+       *  Bundle format is produced by LTX_DUMP_BLOCK26_INPUTS in
+       *  web/src/ltx/generate.ts. Lets a model-smoke diff feed a block
+       *  with REAL captured production-shape activations instead of
+       *  synthetic sinFill, which is the only way to localise a kernel
+       *  bug without NaN-overflow contamination. dtype is always float16. */
+      fromCapture?: { url: string; tensorName: string };
     }>;
     /** If true, after dummy run, iterate outputs and emit stats + first-32-hex
      *  per output so we can diff against a CPU reference log. */
@@ -1528,6 +1585,398 @@ const CANDIDATES: Candidate[] = [
       },
     ],
   },
+  // LTX 2B distilled transformer block_00, tapped to expose every intermediate
+  // node output. Runs the same tapped graph twice (wasm + webgpu) with
+  // identical sinFill inputs, then diffs every output and reports the
+  // first node whose mean-rel-diff exceeds 5%. Used to localise the
+  // "webgpu green-tile garbage vs wasm coherent output" regression
+  // documented in worklog.md "Active bug" to a single ORT-web kernel.
+  //
+  // Build the tapped graph with:
+  //   uv run --with onnx python web/scripts/ltx/expose_block_intermediates.py \
+  //       notes/models/ltx/hf-repo/onnx/transformer-fp16/block_00.onnx
+  //
+  // n_tokens=128, n_text=64 match the python script's shape-inference dims
+  // so tap shapes line up.
+  ...(() => {
+    const LTX_LOCAL = "/local-models/ltx";
+    const N_TOK = 128;
+    const N_TXT = 64;
+    const ltxBlockTappedFiles = () => ({
+      graph: f("ltx", LTX_LOCAL, "onnx/transformer-fp16/block_00_tapped.onnx", 240 * 1024),
+      data: f(
+        "ltx",
+        LTX_LOCAL,
+        "onnx/transformer-fp16/block_00.onnx.data",
+        128 * 1024 * 1024,
+      ),
+    });
+    // Realistic input magnitudes - the previous run with default sinFill
+    // amp=8 overflowed fp16 in layer-norm variance + adaln modulation
+    // and produced NaN floods on BOTH EPs, masking real kernel divergence.
+    // Real-pipeline ranges:
+    //   hidden_states post-patchify: std~0.5-1
+    //   freqs_cos/sin: literally cos/sin in [-1, 1]
+    //   timestep_mod = 1 + small adaln scale, so the sin part is small
+    //   encoder_proj (T5 hidden, projected): magnitudes ~1-3
+    //   encoder_attn_bias: 0 for real tokens (we have no padding here)
+    const sharedDummyRun = {
+      inputs: [
+        { match: ["hidden_states"], shape: [1, N_TOK, 2048], sinFill: { offset: 0.0, amplitude: 1.0 } },
+        { match: ["freqs_cos"], shape: [1, N_TOK, 2048], sinFill: { offset: 1.1, amplitude: 1.0 } },
+        { match: ["freqs_sin"], shape: [1, N_TOK, 2048], sinFill: { offset: 2.2, amplitude: 1.0 } },
+        { match: ["timestep_mod"], shape: [1, 1, 12288], sinFill: { offset: 3.3, amplitude: 0.3 } },
+        { match: ["encoder_proj"], shape: [1, N_TXT, 2048], sinFill: { offset: 4.4, amplitude: 1.5 } },
+        { match: ["encoder_attn_bias"], shape: [1, 1, N_TXT], dtype: "float16" as const },
+      ],
+      dumpOutputs: false,
+      repeats: 1,
+    };
+    const files = ltxBlockTappedFiles();
+    return [
+      {
+        id: "ltx-block-00-diff",
+        label: "LTX block_00 tapped (wasm vs webgpu per-op diff)",
+        components: [
+          {
+            name: "block_00_tapped (wasm)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "block_00.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["wasm" as const],
+            diffPair: "ltx-block-00",
+            dummyRun: sharedDummyRun,
+          },
+          {
+            name: "block_00_tapped (webgpu)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "block_00.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["webgpu" as const],
+            diffPair: "ltx-block-00",
+            dummyRun: sharedDummyRun,
+          },
+        ],
+      } satisfies Candidate,
+      // REAL captured inputs at production shape (N_TOK=196). hidden_states
+      // = shell_pre_hidden from the LTXALL28 all-blocks bundle (the tensor
+      // fed into block_00 in pass1 step 1). aux tensors (freqs_cos/sin,
+      // timestep_mod, encoder_proj, encoder_attn_bias) come from the
+      // LTXBLK26 block_26-input bundle - those are shell_pre outputs and
+      // are identical for every block in the same step. Both bundles
+      // captured from the WebGPU run, so this isolates "what does block_00
+      // do differently between EPs given the EXACT input wgpu produced?".
+      // First op with mean-rel-diff > 5% AND non-trivial maxAbs is the
+      // first kernel to localize. shell_pre_hidden is essentially
+      // identical between wgpu and wasm (max|d|=0.008) so this is the
+      // cleanest place to find single-kernel fp16 accumulation bugs.
+      ((): Candidate => {
+        const allUrl = `${LTX_LOCAL}/captures/ltx_all_blocks_pass1_step1_webgpu.bin`;
+        const auxUrl = `${LTX_LOCAL}/captures/block_26_pass1_step1_inputs_webgpu.bin`;
+        const inputs = [
+          { match: ["hidden_states"], shape: [], fromCapture: { url: allUrl, tensorName: "shell_pre_hidden" } },
+          { match: ["freqs_cos"], shape: [], fromCapture: { url: auxUrl, tensorName: "freqs_cos" } },
+          { match: ["freqs_sin"], shape: [], fromCapture: { url: auxUrl, tensorName: "freqs_sin" } },
+          { match: ["timestep_mod"], shape: [], fromCapture: { url: auxUrl, tensorName: "timestep_mod" } },
+          { match: ["encoder_proj"], shape: [], fromCapture: { url: auxUrl, tensorName: "encoder_proj" } },
+          { match: ["encoder_attn_bias"], shape: [], fromCapture: { url: auxUrl, tensorName: "encoder_attn_bias" } },
+        ];
+        const realDummy = { inputs, dumpOutputs: false, repeats: 1 };
+        return {
+          id: "ltx-block-00-real-diff",
+          label: "LTX block_00 tapped, REAL captured inputs (wasm vs webgpu per-op diff)",
+          components: [
+            {
+              name: "block_00_tapped real (wasm)",
+              graph: files.graph,
+              externalData: { file: files.data, pathInGraph: "block_00.onnx.data" },
+              graphOptLevel: "disabled" as const,
+              executionProviders: ["wasm" as const],
+              diffPair: "ltx-block-00-real",
+              dummyRun: realDummy,
+            },
+            {
+              name: "block_00_tapped real (webgpu)",
+              graph: files.graph,
+              externalData: { file: files.data, pathInGraph: "block_00.onnx.data" },
+              graphOptLevel: "disabled" as const,
+              executionProviders: ["webgpu" as const],
+              diffPair: "ltx-block-00-real",
+              dummyRun: realDummy,
+            },
+          ],
+        };
+      })(),
+    ];
+  })(),
+  // LTX block_26 tapped (wasm vs webgpu). In a real pass1 step 1 with
+  // n_tokens=196 we observe block_26 producing a webgpu-only outlier
+  // (max=+141 vs wasm max=+33) on top of compounded drift through
+  // blocks 00-25. This candidate runs block_26 with the same synthetic
+  // sinFill inputs that block_00 was clean against. If block_26 also
+  // comes back clean at synthetic inputs, the production divergence is
+  // amplification of upstream drift, not a per-block kernel bug, and
+  // the next test is a real-captured-input replay.
+  //
+  // Build with:
+  //   uv run --with onnx python web/scripts/ltx/expose_block_intermediates.py \
+  //       notes/models/ltx/hf-repo/onnx/transformer-fp16/block_26.onnx
+  ...(() => {
+    const LTX_LOCAL = "/local-models/ltx";
+    const N_TOK = 128;
+    const N_TXT = 64;
+    const ltxBlockTappedFiles = () => ({
+      graph: f("ltx", LTX_LOCAL, "onnx/transformer-fp16/block_26_tapped.onnx", 240 * 1024),
+      data: f(
+        "ltx",
+        LTX_LOCAL,
+        "onnx/transformer-fp16/block_26.onnx.data",
+        128 * 1024 * 1024,
+      ),
+    });
+    // hidden_states amplitude lowered from 1.0 -> 0.3: at amp=1.0 the FF
+    // up-projection in block_26 overflows fp16 and floods both EPs with
+    // NaN, masking real kernel divergence. block_00 stayed in range at
+    // amp=1.0 because its weights are smaller. Production never hits the
+    // overflow regime because real post-26-block activations have
+    // correlation structure that the FF weights handle gracefully;
+    // uncorrelated sinFill at the same magnitude is far harsher on the
+    // matmul accumulator.
+    const sharedDummyRun = {
+      inputs: [
+        { match: ["hidden_states"], shape: [1, N_TOK, 2048], sinFill: { offset: 0.0, amplitude: 0.3 } },
+        { match: ["freqs_cos"], shape: [1, N_TOK, 2048], sinFill: { offset: 1.1, amplitude: 1.0 } },
+        { match: ["freqs_sin"], shape: [1, N_TOK, 2048], sinFill: { offset: 2.2, amplitude: 1.0 } },
+        { match: ["timestep_mod"], shape: [1, 1, 12288], sinFill: { offset: 3.3, amplitude: 0.3 } },
+        { match: ["encoder_proj"], shape: [1, N_TXT, 2048], sinFill: { offset: 4.4, amplitude: 1.5 } },
+        { match: ["encoder_attn_bias"], shape: [1, 1, N_TXT], dtype: "float16" as const },
+      ],
+      dumpOutputs: false,
+      repeats: 1,
+    };
+    const files = ltxBlockTappedFiles();
+    return [
+      {
+        id: "ltx-block-26-diff",
+        label: "LTX block_26 tapped (wasm vs webgpu per-op diff)",
+        components: [
+          {
+            name: "block_26_tapped (wasm)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "block_26.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["wasm" as const],
+            diffPair: "ltx-block-26",
+            dummyRun: sharedDummyRun,
+          },
+          {
+            name: "block_26_tapped (webgpu)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "block_26.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["webgpu" as const],
+            diffPair: "ltx-block-26",
+            dummyRun: sharedDummyRun,
+          },
+        ],
+      } satisfies Candidate,
+      // Same block_26_tapped graph as above, but fed with REAL captured
+      // pass1-step-1 production-shape inputs from a generate run with
+      // LTX_DUMP_BLOCK26_INPUTS=true (see web/src/ltx/generate.ts). This
+      // is the only clean per-op diff: synthetic sinFill at any
+      // amplitude floods the cross-attention K-norm path with NaN/Inf
+      // overflow because uncorrelated inputs break RMSNorm's variance
+      // estimate, contaminating the per-element comparison.
+      //
+      // Capture file lives at notes/models/ltx/hf-repo/captures/
+      // (served by the local-model-proxy at runtime).
+      // 4-cell input/exec swap experiment to localize the +141 spike.
+      // Two candidates, two pairs:
+      //   pair "wgpu-cap" (fixed input = webgpu capture): A=wgpu/wgpu vs B=wasm/wgpu
+      //   pair "wasm-cap" (fixed input = wasm   capture): C=wgpu/wasm vs D=wasm/wasm
+      // Reading:
+      //   - small diff in BOTH pairs => kernels innocent on either input;
+      //     bug is upstream cumulative input drift amplified at block_26.
+      //   - large diff in BOTH pairs => some op in block_26 genuinely
+      //     diverges between EPs regardless of input. Localize via per-op
+      //     dumpOutputs.
+      //   - one pair small, one large => the "input" that triggers
+      //     divergence is itself an artifact of the producing EP; bug is
+      //     in an op that's input-sensitive in a way only one EP's
+      //     intermediate values exercise.
+      // Capture files are produced with LTX_DUMP_BLOCK26_INPUTS=true in
+      // generate.ts, named block_26_pass1_step1_inputs_{webgpu,wasm}.bin.
+      ...((): Candidate[] => {
+        const capUrl = (ep: "webgpu" | "wasm") =>
+          `${LTX_LOCAL}/captures/block_26_pass1_step1_inputs_${ep}.bin`;
+        const inputsFromCap = (ep: "webgpu" | "wasm") => [
+          { match: ["hidden_states"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "hidden_states" } },
+          { match: ["freqs_cos"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "freqs_cos" } },
+          { match: ["freqs_sin"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "freqs_sin" } },
+          { match: ["timestep_mod"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "timestep_mod" } },
+          { match: ["encoder_proj"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "encoder_proj" } },
+          { match: ["encoder_attn_bias"], shape: [], fromCapture: { url: capUrl(ep), tensorName: "encoder_attn_bias" } },
+        ];
+        const cell = (
+          name: string,
+          ep: "webgpu" | "wasm",
+          capEp: "webgpu" | "wasm",
+          diffPair: string,
+        ) => ({
+          name,
+          graph: files.graph,
+          externalData: { file: files.data, pathInGraph: "block_26.onnx.data" },
+          graphOptLevel: "disabled" as const,
+          executionProviders: [ep],
+          diffPair,
+          dummyRun: {
+            inputs: inputsFromCap(capEp),
+            dumpOutputs: false,
+            repeats: 1,
+          },
+        });
+        return [
+          {
+            id: "ltx-block-26-real-diff-wgpu-cap",
+            label: "LTX block_26 tapped, REAL inputs from WEBGPU capture (wasm vs webgpu)",
+            components: [
+              cell("block_26 wgpu-cap (webgpu)", "webgpu", "webgpu", "ltx-block-26-real-wgpu-cap"),
+              cell("block_26 wgpu-cap (wasm)",   "wasm",   "webgpu", "ltx-block-26-real-wgpu-cap"),
+            ],
+          } satisfies Candidate,
+          {
+            id: "ltx-block-26-real-diff-wasm-cap",
+            label: "LTX block_26 tapped, REAL inputs from WASM capture (wasm vs webgpu)",
+            components: [
+              cell("block_26 wasm-cap (webgpu)", "webgpu", "wasm", "ltx-block-26-real-wasm-cap"),
+              cell("block_26 wasm-cap (wasm)",   "wasm",   "wasm", "ltx-block-26-real-wasm-cap"),
+            ],
+          } satisfies Candidate,
+        ];
+      })(),
+    ];
+  })(),
+  // LTX shell_pre tapped (wasm vs webgpu). shell_pre runs once per
+  // denoising step and produces 5 of the 6 inputs to every transformer
+  // block (timestep_mod, freqs_cos/sin, encoder_proj, encoder_attn_bias).
+  // If shell_pre's webgpu output drifts from wasm, all 28 blocks
+  // downstream see corrupt conditioning every step. block_00_diff
+  // showed kernels are byte-equivalent there, so shell_pre is the
+  // primary suspect for the production webgpu-vs-wasm divergence.
+  //
+  // Build with:
+  //   uv run --with onnx python web/scripts/ltx/expose_block_intermediates.py \
+  //       notes/models/ltx/hf-repo/onnx/transformer/shell_pre.onnx
+  ...(() => {
+    const LTX_LOCAL = "/local-models/ltx";
+    const N_TOK = 128;
+    const N_TXT = 64;
+    const filesShellPre = () => ({
+      graph: f("ltx", LTX_LOCAL, "onnx/transformer/shell_pre_tapped.onnx", 152 * 1024),
+      data: f(
+        "ltx",
+        LTX_LOCAL,
+        "onnx/transformer/shell_pre.onnx.data",
+        82 * 1024 * 1024,
+      ),
+    });
+    const sharedDummyRun = {
+      inputs: [
+        { match: ["hidden_states"], shape: [1, N_TOK, 128], sinFill: { offset: 0.0, amplitude: 0.5 } },
+        // indices_grid is fp32 RoPE indices (frame, h, w). Real values are
+        // small non-negative ints; sinFill bounded works as a stand-in.
+        { match: ["indices_grid"], shape: [1, 3, N_TOK], dtype: "float32" as const },
+        { match: ["encoder_hidden_states"], shape: [1, N_TXT, 4096], sinFill: { offset: 1.5, amplitude: 1.0 } },
+        // attention mask: 1 = real token. fill=1 keeps everything live.
+        { match: ["encoder_attention_mask"], shape: [1, N_TXT], dtype: "int64" as const, fill: 1 },
+        // timestep: ~0.9 sigma in the distilled sampler's pass1 range.
+        { match: ["timestep"], shape: [1], sinFill: { offset: 0.9, amplitude: 0.0 } },
+      ],
+      dumpOutputs: false,
+      repeats: 1,
+    };
+    const files = filesShellPre();
+    return [
+      {
+        id: "ltx-shell-pre-diff",
+        label: "LTX shell_pre tapped (wasm vs webgpu per-op diff)",
+        components: [
+          {
+            name: "shell_pre_tapped (wasm)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "shell_pre.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["wasm" as const],
+            diffPair: "ltx-shell-pre",
+            dummyRun: sharedDummyRun,
+          },
+          {
+            name: "shell_pre_tapped (webgpu)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "shell_pre.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["webgpu" as const],
+            diffPair: "ltx-shell-pre",
+            dummyRun: sharedDummyRun,
+          },
+        ],
+      } satisfies Candidate,
+    ];
+  })(),
+  // LTX VAE dec_block_00_res_0 tapped (wasm vs webgpu per-op diff). The
+  // VAE-shard bundle (LTXVAE13) localised divergence to res_0: input
+  // (dec_shell_pre.hidden) matches wasm within fp16 noise, output
+  // explodes (maxAbs=7.1, std 5.7x wasm). After the fp16-misc + Pow
+  // patches landed without effect, we tap every node output to find
+  // the first diverging op. Inputs replayed from the captured wasm
+  // VAE-shard bundle (hidden_in = dec_shell_pre.hidden, ts_embed =
+  // dec_block_00_pre.ts_embed). Same fixed input on both EPs => any
+  // diff above fp16 ULP at a tap is a kernel/export bug.
+  //
+  // Build with:
+  //   uv run --with onnx python notes/scripts/tap_res0.py
+  ...(() => {
+    const LTX_LOCAL = "/local-models/ltx";
+    const files = {
+      graph: f("ltx", LTX_LOCAL, "onnx/vae/dec_block_00_res_0_tapped.onnx", 64 * 1024),
+      data: f("ltx", LTX_LOCAL, "onnx/vae/dec_block_00_res_0.onnx.data", 110 * 1024 * 1024),
+    };
+    const capUrl = `${LTX_LOCAL}/captures/ltx_vae_decode_wasm.bin`;
+    const realDummy = {
+      inputs: [
+        { match: ["hidden_in"], shape: [], fromCapture: { url: capUrl, tensorName: "dec_shell_pre.hidden" } },
+        { match: ["ts_embed"], shape: [], fromCapture: { url: capUrl, tensorName: "dec_block_00_pre.ts_embed" } },
+      ],
+      dumpOutputs: false,
+      repeats: 1,
+    };
+    return [
+      {
+        id: "ltx-vae-res0-real-diff",
+        label: "LTX VAE dec_block_00_res_0 tapped, REAL captured inputs (wasm vs webgpu per-op diff)",
+        components: [
+          {
+            name: "dec_block_00_res_0_tapped real (wasm)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "dec_block_00_res_0.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["wasm" as const],
+            diffPair: "ltx-vae-res0-real",
+            dummyRun: realDummy,
+          },
+          {
+            name: "dec_block_00_res_0_tapped real (webgpu)",
+            graph: files.graph,
+            externalData: { file: files.data, pathInGraph: "dec_block_00_res_0.onnx.data" },
+            graphOptLevel: "disabled" as const,
+            executionProviders: ["webgpu" as const],
+            diffPair: "ltx-vae-res0-real",
+            dummyRun: realDummy,
+          },
+        ],
+      } satisfies Candidate,
+    ];
+  })(),
 ];
 
 const cache = new ModelCache({ opfsDirName: "intabai-model-smoke" });
@@ -1646,11 +2095,28 @@ async function dumpEnvironment() {
   log("");
 }
 
+function externalDataList(
+  c: Component,
+): Array<{ file: ModelFile; pathInGraph: string }> {
+  if (!c.externalData) return [];
+  return Array.isArray(c.externalData) ? c.externalData : [c.externalData];
+}
+
 async function downloadAll(comps: Component[]) {
+  // Dedupe by file id - components in a diffPair share the same graph/data
+  // files, and concurrent downloadFiles for the same OPFS id triggers
+  // NoModificationAllowedError on createWritable.
+  const seen = new Set<string>();
   const files: ModelFile[] = [];
+  const push = (f: ModelFile) => {
+    if (!seen.has(f.id)) {
+      seen.add(f.id);
+      files.push(f);
+    }
+  };
   for (const c of comps) {
-    files.push(c.graph);
-    if (c.externalData) files.push(c.externalData.file);
+    push(c.graph);
+    for (const e of externalDataList(c)) push(e.file);
   }
   const cached = await cache.getCachedStatus(files);
   const missing = files.filter((file) => !cached.get(file.id));
@@ -1712,10 +2178,10 @@ async function tryComponent(
   log(
     `graph: ${c.graph.name}${graphSize >= 0 ? ` (${(graphSize / 1024 / 1024).toFixed(1)} MB)` : ""}`,
   );
-  if (c.externalData) {
-    const dataSize = await cache.getFileSize(c.externalData.file).catch(() => -1);
+  for (const e of externalDataList(c)) {
+    const dataSize = await cache.getFileSize(e.file).catch(() => -1);
     log(
-      `externalData: ${c.externalData.file.name}${dataSize >= 0 ? ` (${(dataSize / 1024 / 1024).toFixed(1)} MB)` : ""} (as "${c.externalData.pathInGraph}")`,
+      `externalData: ${e.file.name}${dataSize >= 0 ? ` (${(dataSize / 1024 / 1024).toFixed(1)} MB)` : ""} (as "${e.pathInGraph}")`,
     );
   }
 
@@ -1723,22 +2189,34 @@ async function tryComponent(
 
   // Use blob URLs (avoids copying multi-GB files into wasm heap as ArrayBuffer).
   const { url: graphUrl, revoke: revokeGraph } = await cache.loadFileAsBlobUrl(c.graph);
-  let revokeData = () => {};
+  const revokeFns: Array<() => void> = [];
+  const revokeData = () => {
+    for (const r of revokeFns) r();
+  };
   const ortVerbose = new URLSearchParams(location.search).get("ortverbose") === "1";
+  const eps = c.executionProviders ?? providers();
   const sessionOptions: ort.InferenceSession.SessionOptions = {
-    executionProviders: providers(),
+    executionProviders: eps,
     graphOptimizationLevel: c.graphOptLevel ?? "all",
     ...(ortVerbose ? { logSeverityLevel: 0, logVerbosityLevel: 1 } : {}),
   };
+  if (c.executionProviders) {
+    log(`executionProviders: ${eps.join(", ")} (forced)`);
+  }
   if (c.graphOptLevel) {
     log(`graphOptimizationLevel: ${c.graphOptLevel}`);
   }
-  if (c.externalData) {
-    const { url, revoke } = await cache.loadFileAsBlobUrl(c.externalData.file);
-    revokeData = revoke;
+  const extDataList = externalDataList(c);
+  if (extDataList.length > 0) {
+    const wired: Array<{ path: string; data: string }> = [];
+    for (const e of extDataList) {
+      const { url, revoke } = await cache.loadFileAsBlobUrl(e.file);
+      revokeFns.push(revoke);
+      wired.push({ path: e.pathInGraph, data: url });
+    }
     (
       sessionOptions as unknown as { externalData: Array<{ path: string; data: string }> }
-    ).externalData = [{ path: c.externalData.pathInGraph, data: url }];
+    ).externalData = wired;
   }
 
   let session: ort.InferenceSession | null = null;
@@ -1784,6 +2262,7 @@ async function tryComponent(
     };
     try {
       const feeds: Record<string, ort.Tensor> = {};
+      const captureCache = new Map<string, { manifest: Record<string, { shape: number[]; byteOffset: number; byteLength: number }>; payloadBase: number; buf: ArrayBuffer }>();
       for (const spec of c.dummyRun.inputs) {
         const inputName = findName(session.inputNames, spec.match);
         if (!inputName) {
@@ -1791,6 +2270,45 @@ async function tryComponent(
           continue;
         }
         const len = spec.shape.reduce((a, b) => a * b, 1);
+        if (spec.fromCapture) {
+          const { url, tensorName } = spec.fromCapture;
+          let entry = captureCache.get(url);
+          if (!entry) {
+            const resp = await fetch(url);
+            if (!resp.ok) {
+              log(`  dummyRun: fromCapture fetch ${url} -> ${resp.status}, falling back to zeros`);
+              feeds[inputName] = buildTensor(spec.dtype ?? "float16", len, spec.shape);
+              continue;
+            }
+            const buf = await resp.arrayBuffer();
+            const dv = new DataView(buf);
+            const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 8));
+            if (magic !== "LTXBLK26" && magic !== "LTXALL28" && magic !== "LTXVAE13") {
+              log(`  dummyRun: fromCapture ${url} bad magic ${JSON.stringify(magic)}, falling back to zeros`);
+              feeds[inputName] = buildTensor(spec.dtype ?? "float16", len, spec.shape);
+              continue;
+            }
+            const headerLen = dv.getUint32(8, true);
+            const headerJson = new TextDecoder().decode(new Uint8Array(buf, 12, headerLen));
+            const header = JSON.parse(headerJson) as { tensors: Record<string, { shape: number[]; byteOffset: number; byteLength: number }> };
+            entry = { manifest: header.tensors, payloadBase: 12 + headerLen, buf };
+            captureCache.set(url, entry);
+            log(`  dummyRun: fromCapture loaded ${url} (${(buf.byteLength / 1024 / 1024).toFixed(2)} MB, ${Object.keys(header.tensors).length} tensors)`);
+          }
+          const meta = entry.manifest[tensorName];
+          if (!meta) {
+            log(`  dummyRun: fromCapture ${url} has no tensor ${JSON.stringify(tensorName)}, falling back to zeros`);
+            feeds[inputName] = buildTensor(spec.dtype ?? "float16", len, spec.shape);
+            continue;
+          }
+          const bytes = new Uint8Array(entry.buf, entry.payloadBase + meta.byteOffset, meta.byteLength);
+          const u16 = new Uint16Array(bytes.byteLength / 2);
+          new Uint8Array(u16.buffer).set(bytes);
+          feeds[inputName] = new ort.Tensor("float16", u16, meta.shape);
+          statsFp16Brief(log, `input ${inputName} (from ${tensorName})`, u16);
+          if (spec.dumpInput) dumpFp16Tensor(log, inputName, u16);
+          continue;
+        }
         if (spec.fromPrevOutput) {
           const prevName = findName(Object.keys(prevOutputs), [spec.fromPrevOutput]);
           const prevT = prevName ? prevOutputs[prevName] : undefined;
@@ -1855,6 +2373,15 @@ async function tryComponent(
           }
         } else {
           log(`session.run (dummy zeros) OK in ${dt0.toFixed(0)}ms`);
+        }
+        if (lastResults) {
+          for (const name of Object.keys(lastResults)) {
+            if (!/^conv3d/.test(name)) continue;
+            const t = lastResults[name] as ort.Tensor;
+            if (t.type !== "float16") continue;
+            const bits = copyF16Bits(t.data as ArrayBufferView);
+            statsFp16Brief(log, `output ${name}`, bits);
+          }
         }
         if (c.dummyRun.renderOutput && lastResults) {
           renderOutputFrame(c.dummyRun.renderOutput, lastResults);
@@ -1940,6 +2467,94 @@ async function tryComponent(
   return captured;
 }
 
+/**
+ * Diff two captured fp16 output maps in fp32 space. Walks `b` in
+ * insertion order (graph output order from session.run, which mirrors
+ * onnx.GraphProto.output) so the first divergent op is the upstream-most
+ * one. Logs every output's diff plus a single "FIRST DIVERGENCE" line
+ * for the first one over `threshold` mean-relative-diff.
+ */
+function diffCapturedFp16(
+  pairId: string,
+  aLabel: string,
+  a: Record<string, ort.Tensor>,
+  bLabel: string,
+  b: Record<string, ort.Tensor>,
+  threshold: number,
+): void {
+  log(`=== diff ${pairId}: ${aLabel} vs ${bLabel} (threshold mean-rel-diff > ${(threshold * 100).toFixed(1)}%) ===`);
+  let firstBad: string | null = null;
+  let compared = 0;
+  for (const name of Object.keys(b)) {
+    const tb = b[name];
+    const ta = a[name];
+    if (!ta) continue;
+    if (tb.type !== "float16" || ta.type !== "float16") continue;
+    // Use copyF16Bits (not `data as Uint16Array`): Chrome 147+ returns
+    // tensor.data as Float16Array, which silently corrupts when iterated
+    // as if it were Uint16Array (already-converted f32 numbers get
+    // reinterpreted as fp16 bit patterns -> spurious NaN/Inf flooding).
+    // Diagnosed 2026-05-06 on the LTX VAE res_0 bisect: the broken diff
+    // reported bothNan=243816 at conv3d while actual conv3d output was
+    // 100% finite, range [-680, +30.7].
+    const fa = f16ToF32Array(copyF16Bits(ta.data as ArrayBufferView));
+    const fb = f16ToF32Array(copyF16Bits(tb.data as ArrayBufferView));
+    if (fa.length !== fb.length) {
+      log(`  ${name}: SHAPE MISMATCH ${fa.length} vs ${fb.length}`);
+      continue;
+    }
+    let maxAbs = 0;
+    let sumAbs = 0;
+    let sumRefAbs = 0;
+    let bothNan = 0;
+    let aNanOnly = 0;
+    let bNanOnly = 0;
+    for (let i = 0; i < fa.length; i++) {
+      const va = fa[i];
+      const vb = fb[i];
+      const aN = Number.isNaN(va) || !Number.isFinite(va);
+      const bN = Number.isNaN(vb) || !Number.isFinite(vb);
+      if (aN && bN) {
+        bothNan++;
+        continue;
+      }
+      if (aN) {
+        aNanOnly++;
+        continue;
+      }
+      if (bN) {
+        bNanOnly++;
+        continue;
+      }
+      const d = Math.abs(va - vb);
+      if (d > maxAbs) maxAbs = d;
+      sumAbs += d;
+      sumRefAbs += Math.abs(va);
+    }
+    const finiteN = Math.max(1, fa.length - bothNan - aNanOnly - bNanOnly);
+    const meanAbs = sumAbs / finiteN;
+    const meanRel = sumAbs / Math.max(1e-12, sumRefAbs);
+    const asymN = aNanOnly + bNanOnly;
+    const asymRatio = asymN / fa.length;
+    // EP-specific overflow (one side NaN, other finite) is ALSO a kernel
+    // divergence - flag it as such.
+    const overThresh = meanRel > threshold || asymRatio > threshold;
+    const flag = overThresh ? "  ** OVER THRESHOLD **" : "";
+    log(
+      `  ${name}: maxAbs=${maxAbs.toExponential(2)} meanAbs=${meanAbs.toExponential(2)} meanRel=${(meanRel * 100).toFixed(2)}% bothNan=${bothNan} ${aLabel}-only-NaN=${aNanOnly} ${bLabel}-only-NaN=${bNanOnly}${flag}`,
+    );
+    compared++;
+    if (firstBad === null && overThresh) firstBad = name;
+  }
+  log(`compared ${compared} fp16 outputs`);
+  if (firstBad) {
+    log(`>>> FIRST DIVERGENCE (graph order): ${firstBad}`);
+  } else {
+    log(`>>> no output exceeded threshold`);
+  }
+  log("");
+}
+
 async function runSmoke() {
   $run.disabled = true;
   $clear.disabled = true;
@@ -1961,10 +2576,23 @@ async function runSmoke() {
     // VAE-split parts whose side-input (e.g. block_input for an up_block's
     // avg_shortcut) comes from several components upstream.
     let prevOutputs: Record<string, ort.Tensor> = {};
+    const diffPairBaselines = new Map<
+      string,
+      { label: string; outputs: Record<string, ort.Tensor> }
+    >();
     for (const c of comps) {
       try {
         const out = await tryComponent(c, prevOutputs);
         prevOutputs = { ...prevOutputs, ...out };
+        if (c.diffPair) {
+          const prior = diffPairBaselines.get(c.diffPair);
+          if (!prior) {
+            diffPairBaselines.set(c.diffPair, { label: c.name, outputs: out });
+          } else {
+            diffCapturedFp16(c.diffPair, prior.label, prior.outputs, c.name, out, 0.05);
+            diffPairBaselines.delete(c.diffPair);
+          }
+        }
       } catch (err) {
         log(`unexpected error on ${c.name}: ${(err as Error).message}`);
         log("");
